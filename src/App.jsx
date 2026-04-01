@@ -7,6 +7,9 @@ import SalesInput from './pages/SalesInput'
 import Products from './pages/Products'
 import Channels from './pages/Channels'
 import AuditLog from './pages/AuditLog'
+import Suppliers from './pages/Suppliers'
+import PurchaseInput from './pages/PurchaseInput'
+import Purchases from './pages/Purchases'
 import Layout from './components/Layout'
 
 function App() {
@@ -27,17 +30,10 @@ function App() {
 
   if (loading) {
     return (
-      <div style={{
-        minHeight: '100vh', display: 'flex', alignItems: 'center',
-        justifyContent: 'center', background: '#f8fafc'
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{
-            width: 48, height: 48, border: '4px solid #6366f1',
-            borderTopColor: 'transparent', borderRadius: '50%',
-            margin: '0 auto 16px'
-          }} className="animate-spin"></div>
-          <p style={{ color: '#94a3b8' }}>로딩 중...</p>
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-500">로딩 중...</p>
         </div>
       </div>
     )
@@ -52,6 +48,9 @@ function App() {
       case 'sales-input': return <SalesInput />
       case 'products': return <Products />
       case 'channels': return <Channels />
+      case 'suppliers': return <Suppliers />
+      case 'purchase-input': return <PurchaseInput />
+      case 'purchases': return <Purchases />
       case 'audit-log': return <AuditLog />
       default: return <Dashboard />
     }
