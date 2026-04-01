@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
-const CHANNEL_COLORS = ['#6366f1','#8b5cf6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#64748b']
+const CHANNEL_COLORS = [
+  '#6366f1', '#8b5cf6', '#06b6d4', '#10b981',
+  '#f59e0b', '#ef4444', '#ec4899', '#64748b',
+]
 
 function Channels() {
   const [channels, setChannels] = useState([])
@@ -9,153 +12,366 @@ function Channels() {
   const [editId, setEditId] = useState(null)
   const [loading, setLoading] = useState(true)
   const [form, setForm] = useState({
-    channel_name: '', channel_type: 'open_market', default_commission_type: 'RATE',
-    default_commission_rate: '', default_commission_fixed: '', default_shipping_policy: 'PAID',
-    default_shipping_cost: '', color_code: '#6366f1', has_excel_format: true,
+    channel_name: '',
+    channel_type: 'open_market',
+    default_commission_type: 'RATE',
+    default_commission_rate: '',
+    default_commission_fixed: '',
+    default_shipping_policy: 'PAID',
+    default_shipping_cost: '',
+    color_code: '#6366f1',
+    has_excel_format: true,
   })
 
-  useEffect(() => { fetchChannels() }, [])
+  useEffect(() => {
+    fetchChannels()
+  }, [])
 
   const fetchChannels = async () => {
-    const { data } = await supabase.from('channels').select('*').order('sort_order')
-    setChannels(data || []); setLoading(false)
+    const { data } = await supabase
+      .from('channels')
+      .select('*')
+      .order('sort_order')
+    setChannels(data || [])
+    setLoading(false)
   }
 
   const resetForm = () => {
-    setForm({ channel_name: '', channel_type: 'open_market', default_commission_type: 'RATE',
-      default_commission_rate: '', default_commission_fixed: '', default_shipping_policy: 'PAID',
-      default_shipping_cost: '', color_code: CHANNEL_COLORS[channels.length % CHANNEL_COLORS.length], has_excel_format: true })
+    setForm({
+      channel_name: '',
+      channel_type: 'open_market',
+      default_commission_type: 'RATE',
+      default_commission_rate: '',
+      default_commission_fixed: '',
+      default_shipping_policy: 'PAID',
+      default_shipping_cost: '',
+      color_code: CHANNEL_COLORS[channels.length % CHANNEL_COLORS.length],
+      has_excel_format: true,
+    })
     setEditId(null)
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     const user = (await supabase.auth.getUser()).data.user
-    const data = { ...form, default_commission_rate: Number(form.default_commission_rate)||0,
-      default_commission_fixed: Number(form.default_commission_fixed)||0,
-      default_shipping_cost: Number(form.default_shipping_cost)||0, sort_order: channels.length }
-    if (editId) { await supabase.from('channels').update(data).eq('id', editId) }
-    else { data.created_by = user.id; await supabase.from('channels').insert(data) }
-    setShowForm(false); resetForm(); fetchChannels()
+
+    const data = {
+      ...form,
+      default_commission_rate: Number(form.default_commission_rate) || 0,
+      default_commission_fixed: Number(form.default_commission_fixed) || 0,
+      default_shipping_cost: Number(form.default_shipping_cost) || 0,
+      sort_order: channels.length,
+    }
+
+    if (editId) {
+      await supabase.from('channels').update(data).eq('id', editId)
+    } else {
+      data.created_by = user.id
+      await supabase.from('channels').insert(data)
+    }
+
+    setShowForm(false)
+    resetForm()
+    fetchChannels()
   }
 
-  const handleEdit = (ch) => {
-    setForm({ channel_name: ch.channel_name, channel_type: ch.channel_type,
-      default_commission_type: ch.default_commission_type, default_commission_rate: ch.default_commission_rate||'',
-      default_commission_fixed: ch.default_commission_fixed||'', default_shipping_policy: ch.default_shipping_policy,
-      default_shipping_cost: ch.default_shipping_cost||'', color_code: ch.color_code||'#6366f1', has_excel_format: ch.has_excel_format })
-    setEditId(ch.id); setShowForm(true)
+  const handleEdit = (channel) => {
+    setForm({
+      channel_name: channel.channel_name,
+      channel_type: channel.channel_type,
+      default_commission_type: channel.default_commission_type,
+      default_commission_rate: channel.default_commission_rate || '',
+      default_commission_fixed: channel.default_commission_fixed || '',
+      default_shipping_policy: channel.default_shipping_policy,
+      default_shipping_cost: channel.default_shipping_cost || '',
+      color_code: channel.color_code || '#6366f1',
+      has_excel_format: channel.has_excel_format,
+    })
+    setEditId(channel.id)
+    setShowForm(true)
   }
 
   const handleDelete = async (id) => {
     if (window.confirm('이 채널을 삭제하시겠습니까?')) {
-      await supabase.from('channels').delete().eq('id', id); fetchChannels()
+      await supabase.from('channels').delete().eq('id', id)
+      fetchChannels()
     }
   }
 
-  const s = {
-    card: { background:'#fff', borderRadius:16, border:'1px solid #e2e8f0', padding:20 },
-    btn: { padding:'8px 16px', background:'#6366f1', color:'#fff', borderRadius:12, fontSize:14, fontWeight:500, border:'none', cursor:'pointer' },
-    btnOutline: { padding:'8px 16px', borderRadius:12, fontSize:14, fontWeight:500, border:'1px solid #e2e8f0', background:'#fff', color:'#64748b', cursor:'pointer' },
-    label: { display:'block', fontSize:13, fontWeight:500, color:'#475569', marginBottom:4 },
-    input: { width:'100%', padding:'10px 14px', borderRadius:12, border:'1px solid #e2e8f0', outline:'none', fontSize:14, boxSizing:'border-box' },
-    overlay: { position:'fixed', inset:0, background:'rgba(0,0,0,0.5)', zIndex:50, display:'flex', alignItems:'center', justifyContent:'center', padding:16 },
-    modal: { background:'#fff', borderRadius:16, width:'100%', maxWidth:500, maxHeight:'90vh', overflowY:'auto' },
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+      </div>
+    )
   }
 
-  if (loading) return (
-    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:256 }}>
-      <div style={{ width:40, height:40, border:'4px solid #6366f1', borderTopColor:'transparent', borderRadius:'50%' }} className="animate-spin"></div>
-    </div>
-  )
-
   return (
-    <div>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:24 }}>
-        <p style={{ fontSize:14, color:'#94a3b8' }}>등록된 채널 {channels.length}개</p>
-        <button onClick={() => { resetForm(); setShowForm(true) }} style={s.btn}>+ 채널 추가</button>
+    <div className="space-y-6">
+      {/* 상단 */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-slate-500">등록된 채널 {channels.length}개</p>
+        <button
+          onClick={() => { resetForm(); setShowForm(true) }}
+          className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors"
+        >
+          + 채널 추가
+        </button>
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(280px, 1fr))', gap:16 }}>
-        {channels.map(ch => (
-          <div key={ch.id} style={s.card}>
-            <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:12 }}>
-              <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-                <div style={{ width:40, height:40, borderRadius:12, background:ch.color_code||'#6366f1', display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontWeight:700, fontSize:14 }}>
-                  {ch.channel_name.slice(0,1)}
+      {/* 채널 목록 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {channels.map((ch) => (
+          <div key={ch.id} className="bg-white rounded-2xl border border-slate-200 p-5">
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <div
+                  className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold text-sm"
+                  style={{ backgroundColor: ch.color_code || '#6366f1' }}
+                >
+                  {ch.channel_name.slice(0, 1)}
                 </div>
                 <div>
-                  <h3 style={{ fontWeight:600, color:'#1e293b', fontSize:15 }}>{ch.channel_name}</h3>
-                  <span style={{ fontSize:12, color:'#94a3b8' }}>{ch.channel_type==='open_market'?'오픈마켓':'폐쇄몰'}</span>
+                  <h3 className="font-semibold text-slate-800">{ch.channel_name}</h3>
+                  <span className="text-xs text-slate-400">
+                    {ch.channel_type === 'open_market' ? '오픈마켓' : '폐쇄몰'}
+                  </span>
                 </div>
               </div>
-              <div style={{ display:'flex', gap:4 }}>
-                <button onClick={() => handleEdit(ch)} style={{ padding:6, border:'none', background:'none', cursor:'pointer', fontSize:14 }}>✏️</button>
-                <button onClick={() => handleDelete(ch.id)} style={{ padding:6, border:'none', background:'none', cursor:'pointer', fontSize:14 }}>🗑️</button>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => handleEdit(ch)}
+                  className="p-2 hover:bg-slate-100 rounded-lg text-sm"
+                >
+                  ✏️
+                </button>
+                <button
+                  onClick={() => handleDelete(ch.id)}
+                  className="p-2 hover:bg-red-50 rounded-lg text-sm"
+                >
+                  🗑️
+                </button>
               </div>
             </div>
-            <div style={{ fontSize:13 }}>
-              {[
-                ['수수료', ch.default_commission_type==='RATE'?`${ch.default_commission_rate}%`:`${Number(ch.default_commission_fixed).toLocaleString()}원`],
-                ['배송비 정책', ch.default_shipping_policy==='FREE'?'무료배송':ch.default_shipping_policy==='CONDITIONAL'?'조건부 무료':'유료배송'],
-                ...(ch.default_shipping_cost>0?[['택배비',`${Number(ch.default_shipping_cost).toLocaleString()}원`]]:[]),
-                ['엑셀 양식', ch.has_excel_format?'있음':'없음 (수기)'],
-              ].map(([k,v],i) => (
-                <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0' }}>
-                  <span style={{ color:'#94a3b8' }}>{k}</span>
-                  <span style={{ color:'#475569', fontWeight:500 }}>{v}</span>
+
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-slate-500">수수료</span>
+                <span className="text-slate-700 font-medium">
+                  {ch.default_commission_type === 'RATE'
+                    ? `${ch.default_commission_rate}%`
+                    : `${Number(ch.default_commission_fixed).toLocaleString()}원`}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">배송비 정책</span>
+                <span className="text-slate-700 font-medium">
+                  {ch.default_shipping_policy === 'FREE' ? '무료배송'
+                    : ch.default_shipping_policy === 'CONDITIONAL' ? '조건부 무료'
+                    : '유료배송'}
+                </span>
+              </div>
+              {ch.default_shipping_cost > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">택배비</span>
+                  <span className="text-slate-700 font-medium">
+                    {Number(ch.default_shipping_cost).toLocaleString()}원
+                  </span>
                 </div>
-              ))}
+              )}
+              <div className="flex justify-between">
+                <span className="text-slate-500">엑셀 양식</span>
+                <span className="text-slate-700 font-medium">
+                  {ch.has_excel_format ? '있음' : '없음 (수기)'}
+                </span>
+              </div>
             </div>
           </div>
         ))}
       </div>
 
+      {/* 등록/수정 모달 */}
       {showForm && (
-        <div style={s.overlay}>
-          <div style={s.modal}>
-            <div style={{ padding:'20px 24px', borderBottom:'1px solid #e2e8f0', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-              <h3 style={{ fontSize:17, fontWeight:600 }}>{editId?'채널 수정':'채널 추가'}</h3>
-              <button onClick={() => { setShowForm(false); resetForm() }} style={{ border:'none', background:'none', fontSize:20, cursor:'pointer', color:'#94a3b8' }}>✕</button>
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="text-lg font-semibold">{editId ? '채널 수정' : '채널 추가'}</h3>
+              <button onClick={() => { setShowForm(false); resetForm() }} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
             </div>
-            <form onSubmit={handleSubmit} style={{ padding:24 }}>
-              <div style={{ marginBottom:16 }}>
-                <label style={s.label}>채널명</label>
-                <input type="text" value={form.channel_name} onChange={e=>setForm({...form,channel_name:e.target.value})} style={s.input} placeholder="예: 쿠팡, 스마트스토어" required />
+
+            <form onSubmit={handleSubmit} className="p-6 space-y-5">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">채널명</label>
+                <input
+                  type="text"
+                  value={form.channel_name}
+                  onChange={e => setForm({ ...form, channel_name: e.target.value })}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+                  placeholder="예: 쿠팡, 스마트스토어"
+                  required
+                />
               </div>
-              <div style={{ marginBottom:16 }}>
-                <label style={s.label}>채널 유형</label>
-                <div style={{ display:'flex', gap:8 }}>
-                  {[{v:'open_market',l:'오픈마켓'},{v:'closed_mall',l:'폐쇄몰'}].map(o => (
-                    <button key={o.v} type="button" onClick={() => setForm({...form,channel_type:o.v})}
-                      style={{ flex:1, padding:10, borderRadius:12, fontSize:14, fontWeight:500, cursor:'pointer',
-                        border: form.channel_type===o.v?'2px solid #6366f1':'1px solid #e2e8f0',
-                        background: form.channel_type===o.v?'#eef2ff':'#fff',
-                        color: form.channel_type===o.v?'#4f46e5':'#64748b' }}>{o.l}</button>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">채널 유형</label>
+                <div className="flex gap-3">
+                  {[
+                    { value: 'open_market', label: '오픈마켓' },
+                    { value: 'closed_mall', label: '폐쇄몰' },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setForm({ ...form, channel_type: opt.value })}
+                      className={`flex-1 py-3 rounded-xl text-sm font-medium border transition-colors ${
+                        form.channel_type === opt.value
+                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                          : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
                   ))}
                 </div>
               </div>
-              <div style={{ marginBottom:16 }}>
-                <label style={s.label}>수수료 유형</label>
-                <div style={{ display:'flex', gap:8 }}>
-                  {[{v:'RATE',l:'비율 (%)'},{v:'FIXED',l:'고정 (원)'}].map(o => (
-                    <button key={o.v} type="button" onClick={() => setForm({...form,default_commission_type:o.v})}
-                      style={{ flex:1, padding:10, borderRadius:12, fontSize:14, fontWeight:500, cursor:'pointer',
-                        border: form.default_commission_type===o.v?'2px solid #6366f1':'1px solid #e2e8f0',
-                        background: form.default_commission_type===o.v?'#eef2ff':'#fff',
-                        color: form.default_commission_type===o.v?'#4f46e5':'#64748b' }}>{o.l}</button>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">수수료 유형</label>
+                <div className="flex gap-3">
+                  {[
+                    { value: 'RATE', label: '비율 (%)' },
+                    { value: 'FIXED', label: '고정 (원)' },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setForm({ ...form, default_commission_type: opt.value })}
+                      className={`flex-1 py-3 rounded-xl text-sm font-medium border transition-colors ${
+                        form.default_commission_type === opt.value
+                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                          : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
                   ))}
                 </div>
               </div>
-              <div style={{ marginBottom:16 }}>
-                <label style={s.label}>{form.default_commission_type==='RATE'?'수수료율 (%)':'고정 수수료 (원)'}</label>
-                <input type="number" step={form.default_commission_type==='RATE'?"0.1":"1"}
-                  value={form.default_commission_type==='RATE'?form.default_commission_rate:form.default_commission_fixed}
-                  onChange={e => setForm({...form, [form.default_commission_type==='RATE'?'default_commission_rate':'default_commission_fixed']:e.target.value})}
-                  style={s.input} placeholder={form.default_commission_type==='RATE'?"예: 10.5":"예: 1000"} />
+
+              {form.default_commission_type === 'RATE' ? (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">수수료율 (%)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={form.default_commission_rate}
+                    onChange={e => setForm({ ...form, default_commission_rate: e.target.value })}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+                    placeholder="예: 10.5"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">고정 수수료 (원)</label>
+                  <input
+                    type="number"
+                    value={form.default_commission_fixed}
+                    onChange={e => setForm({ ...form, default_commission_fixed: e.target.value })}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+                    placeholder="예: 1000"
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">배송비 정책</label>
+                <div className="flex gap-2">
+                  {[
+                    { value: 'FREE', label: '무료배송' },
+                    { value: 'CONDITIONAL', label: '조건부 무료' },
+                    { value: 'PAID', label: '유료배송' },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setForm({ ...form, default_shipping_policy: opt.value })}
+                      className={`flex-1 py-3 rounded-xl text-sm font-medium border transition-colors ${
+                        form.default_shipping_policy === opt.value
+                          ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                          : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div style={{ marginBottom:16 }}>
-                <label style={s.label}>배송비 정책</label>
-                <div style={{ display:'flex', gap:8 }}>
-                  {[{v:'FREE',l:'무료배송'},{v:'CONDITIONAL',l:'조건부 무료'},{v:'PAID',l:'유료배송'}].map(o => (
-                    <button key={o.
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">실제 택배비 (원)</label>
+                <input
+                  type="number"
+                  value={form.default_shipping_cost}
+                  onChange={e => setForm({ ...form, default_shipping_cost: e.target.value })}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+                  placeholder="예: 3000"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">테마 색상</label>
+                <div className="flex gap-2">
+                  {CHANNEL_COLORS.map(color => (
+                    <button
+                      key={color}
+                      type="button"
+                      onClick={() => setForm({ ...form, color_code: color })}
+                      className={`w-8 h-8 rounded-full transition-transform ${
+                        form.color_code === color ? 'ring-2 ring-offset-2 ring-indigo-500 scale-110' : ''
+                      }`}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-sm font-medium text-slate-700">엑셀 양식 존재</label>
+                <button
+                  type="button"
+                  onClick={() => setForm({ ...form, has_excel_format: !form.has_excel_format })}
+                  className={`w-12 h-6 rounded-full transition-colors relative ${
+                    form.has_excel_format ? 'bg-indigo-600' : 'bg-slate-300'
+                  }`}
+                >
+                  <div className={`w-5 h-5 bg-white rounded-full absolute top-0.5 transition-transform ${
+                    form.has_excel_format ? 'translate-x-6' : 'translate-x-0.5'
+                  }`} />
+                </button>
+                <span className="text-sm text-slate-500">{form.has_excel_format ? '있음' : '없음 (수기 입력)'}</span>
+              </div>
+
+              <div className="flex gap-3 pt-3">
+                <button
+                  type="button"
+                  onClick={() => { setShowForm(false); resetForm() }}
+                  className="flex-1 py-3 rounded-xl border border-slate-300 text-slate-600 font-medium hover:bg-slate-50 transition-colors"
+                >
+                  취소
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-medium hover:bg-indigo-700 transition-colors"
+                >
+                  {editId ? '수정' : '추가'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default Channels
