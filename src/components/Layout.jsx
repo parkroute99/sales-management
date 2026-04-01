@@ -13,90 +13,75 @@ const menuItems = [
 function Layout({ children, currentPage, setCurrentPage, session }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut()
-  }
+  const handleLogout = async () => { await supabase.auth.signOut() }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex">
-      {/* 모바일 오버레이 */}
+    <div style={{ minHeight: '100vh', background: '#f8fafc', display: 'flex' }}>
       {sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
+        <div onClick={() => setSidebarOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 40 }} />
       )}
 
-      {/* 사이드바 */}
-      <aside className={`
-        fixed lg:static inset-y-0 left-0 z-50
-        w-64 bg-white border-r border-slate-200
-        transform transition-transform duration-200
-        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-      `}>
-        <div className="p-6 border-b border-slate-200">
-          <h1 className="text-xl font-bold text-indigo-600">매출 관리</h1>
-          <p className="text-xs text-slate-400 mt-1">Sales Management System</p>
+      <aside style={{
+        width: 256, background: '#fff', borderRight: '1px solid #e2e8f0',
+        display: 'flex', flexDirection: 'column', position: 'fixed', top: 0, bottom: 0, left: 0,
+        transform: sidebarOpen ? 'translateX(0)' : (window.innerWidth < 1024 ? 'translateX(-100%)' : 'translateX(0)'),
+        transition: 'transform 0.2s', zIndex: 50
+      }}>
+        <div style={{ padding: '24px', borderBottom: '1px solid #e2e8f0' }}>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: '#6366f1' }}>매출 관리</h1>
+          <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Sales Management System</p>
         </div>
 
-        <nav className="p-4 space-y-1">
+        <nav style={{ padding: 16, flex: 1 }}>
           {menuItems.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => {
-                setCurrentPage(item.id)
-                setSidebarOpen(false)
-              }}
-              className={`
-                w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium
-                transition-all duration-150
-                ${currentPage === item.id
-                  ? 'bg-indigo-50 text-indigo-700'
-                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
-                }
-              `}
-            >
-              <span className="text-lg">{item.icon}</span>
+            <button key={item.id}
+              onClick={() => { setCurrentPage(item.id); setSidebarOpen(false) }}
+              style={{
+                width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+                padding: '12px 16px', borderRadius: 12, fontSize: 14, fontWeight: 500,
+                border: 'none', cursor: 'pointer', marginBottom: 4,
+                background: currentPage === item.id ? '#eef2ff' : 'transparent',
+                color: currentPage === item.id ? '#4f46e5' : '#64748b',
+              }}>
+              <span style={{ fontSize: 18 }}>{item.icon}</span>
               {item.label}
             </button>
           ))}
         </nav>
 
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-200">
-          <div className="flex items-center gap-3 mb-3 px-2">
-            <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-sm">
-              👤
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-slate-500 truncate">{session?.user?.email}</p>
-            </div>
+        <div style={{ padding: 16, borderTop: '1px solid #e2e8f0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0 8px', marginBottom: 12 }}>
+            <div style={{
+              width: 32, height: 32, borderRadius: '50%', background: '#eef2ff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14
+            }}>👤</div>
+            <p style={{ fontSize: 12, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {session?.user?.email}
+            </p>
           </div>
-          <button
-            onClick={handleLogout}
-            className="w-full px-4 py-2 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-          >
-            로그아웃
-          </button>
+          <button onClick={handleLogout} style={{
+            width: '100%', padding: '8px 16px', fontSize: 14, color: '#94a3b8',
+            border: 'none', borderRadius: 8, cursor: 'pointer', background: 'transparent'
+          }}>로그아웃</button>
         </div>
       </aside>
 
-      {/* 메인 영역 */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* 상단 바 */}
-        <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center gap-4">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="lg:hidden p-2 hover:bg-slate-100 rounded-lg"
-          >
-            <span className="text-xl">☰</span>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', marginLeft: window.innerWidth >= 1024 ? 256 : 0 }}>
+        <header style={{
+          background: '#fff', borderBottom: '1px solid #e2e8f0',
+          padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 16
+        }}>
+          <button onClick={() => setSidebarOpen(true)}
+            style={{ display: window.innerWidth >= 1024 ? 'none' : 'block', padding: 8, border: 'none', background: 'none', fontSize: 20, cursor: 'pointer' }}>
+            ☰
           </button>
-          <h2 className="text-lg font-semibold text-slate-800">
+          <h2 style={{ fontSize: 18, fontWeight: 600, color: '#1e293b' }}>
             {menuItems.find(m => m.id === currentPage)?.label || '대시보드'}
           </h2>
         </header>
 
-        {/* 페이지 내용 */}
-        <main className="flex-1 p-6 overflow-auto">
+        <main style={{ flex: 1, padding: 24, overflowY: 'auto' }}>
           {children}
         </main>
       </div>
