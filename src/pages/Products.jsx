@@ -2,19 +2,32 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 
+const DEFAULT_CATEGORIES = ['스킨케어', '밀키트', '냉동식품', '건강식품', '생활용품', '음료', '간식/과자', '양념/소스']
+
 function Products() {
   const [products, setProducts] = useState([])
   const [showForm, setShowForm] = useState(false)
   const [editId, setEditId] = useState(null)
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES)
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false)
+  const [newCategory, setNewCategory] = useState('')
+  const [filterCategory, setFilterCategory] = useState('all')
   const [form, setForm] = useState({ product_code: '', product_name: '', category: '', purchase_cost: '', packaging_cost: '', additional_cost: '' })
 
   useEffect(() => { fetchProducts() }, [])
 
   const fetchProducts = async () => {
     const { data } = await supabase.from('products').select('*').eq('is_active', true).order('usage_count', { ascending: false })
-    setProducts(data || []); setLoading(false)
+    setProducts(data || [])
+    // DB에 있는 카테고리 추출해서 합치기
+    if (data) {
+      const dbCategories = [...new Set(data.map(p => p.category).filter(Boolean))]
+      const merged = [...new Set([...DEFAULT_CATEGORIES, ...dbCategories])]
+      setCategories(merged)
+    }
+    setLoading(false)
   }
 
   const resetForm = () => { setForm({ product_code: '', product_name: '', category: '', purchase_cost: '', packaging_cost: '', additional_cost: '' }); setEditId(null) }
@@ -84,9 +97,26 @@ function Products() {
     e.target.value = ''
   }
 
-  const filteredProducts = products.filter(p =>
-    p.product_name.includes(search) || p.product_code.includes(search) || (p.category && p.category.includes(search))
-  )
+  const addCategory = () => {
+    if (!newCategory.trim()) return
+    if (!categories.includes(newCategory.trim())) {
+      setCategories([...categories, newCategory.trim()])
+    }
+    setForm({ ...form, category: newCategory.trim() })
+    setNewCategory('')
+    setShowCategoryDropdown(false)
+  }
+
+  const selectCategory = (cat) => {
+    setForm({ ...form, category: cat })
+    setShowCategoryDropdown(false)
+  }
+
+  const filteredProducts = products.filter(p => {
+    const matchSearch = p.product_name.includes(search) || p.product_code.includes(search) || (p.category && p.category.includes(search))
+    const matchCategory = filterCategory === 'all' || p.category === filterCategory
+    return matchSearch && matchCategory
+  })
   const formatNumber = (num) => Number(num || 0).toLocaleString()
 
   if (loading) return (
@@ -98,9 +128,16 @@ function Products() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <input type="text" value={search} onChange={e => setSearch(e.target.value)}
-          className="w-full sm:w-80 px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
-          placeholder="제품명 또는 코드로 검색..." />
+        <div className="flex gap-3 items-center">
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+            className="w-64 px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+            placeholder="제품명 또는 코드로 검색..." />
+          <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
+            className="px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-sm">
+            <option value="all">전체 카테고리</option>
+            {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
         <div className="flex gap-2">
           <button onClick={handleExcelDownload} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700">📥 다운로드</button>
           <label className="px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 cursor-pointer">
@@ -108,6 +145,24 @@ function Products() {
           </label>
           <button onClick={() => { resetForm(); setShowForm(true) }} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700">+ 추가</button>
         </div>
+      </div>
+
+      {/* 카테고리 빠른 필터 */}
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => setFilterCategory('all')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+            filterCategory === 'all' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+          }`}>전체 ({products.length})</button>
+        {categories.map(c => {
+          const count = products.filter(p => p.category === c).length
+          if (count === 0) return null
+          return (
+            <button key={c} onClick={() => setFilterCategory(c)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                filterCategory === c ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+              }`}>{c} ({count})</button>
+          )
+        })}
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
@@ -130,7 +185,11 @@ function Products() {
                 <tr key={p.id} className="border-b border-slate-100 hover:bg-slate-50">
                   <td className="px-5 py-4 text-sm font-mono text-indigo-600">{p.product_code}</td>
                   <td className="px-5 py-4 text-sm font-medium text-slate-800">{p.product_name}</td>
-                  <td className="px-5 py-4 text-sm text-slate-500">{p.category || '-'}</td>
+                  <td className="px-5 py-4">
+                    {p.category ? (
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-100 text-slate-600">{p.category}</span>
+                    ) : <span className="text-xs text-slate-400">-</span>}
+                  </td>
                   <td className="px-5 py-4 text-sm text-right text-slate-700">{formatNumber(p.purchase_cost)}원</td>
                   <td className="px-5 py-4 text-sm text-right text-slate-700">{formatNumber(p.packaging_cost)}원</td>
                   <td className="px-5 py-4 text-sm text-right font-semibold text-slate-800">{formatNumber(p.total_cost)}원</td>
@@ -142,7 +201,7 @@ function Products() {
                 </tr>
               ))}
               {filteredProducts.length === 0 && (
-                <tr><td colSpan="8" className="px-5 py-12 text-center text-slate-400">{search ? '검색 결과가 없습니다.' : '등록된 제품이 없습니다.'}</td></tr>
+                <tr><td colSpan="8" className="px-5 py-12 text-center text-slate-400">{search || filterCategory !== 'all' ? '검색 결과가 없습니다.' : '등록된 제품이 없습니다.'}</td></tr>
               )}
             </tbody>
           </table>
@@ -154,18 +213,55 @@ function Products() {
           <div className="bg-white rounded-2xl w-full max-w-lg">
             <div className="p-6 border-b border-slate-200 flex items-center justify-between">
               <h3 className="text-lg font-semibold">{editId ? '제품 수정' : '제품 추가'}</h3>
-              <button onClick={() => { setShowForm(false); resetForm() }} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
+              <button onClick={() => { setShowForm(false); resetForm(); setShowCategoryDropdown(false) }} className="text-slate-400 hover:text-slate-600 text-xl">✕</button>
             </div>
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div className="grid grid-cols-2 gap-4">
-                <div><label className="block text-sm font-medium text-slate-700 mb-1">제품 코드</label>
+                <div><label className="block text-sm font-medium text-slate-700 mb-1">제품 코드 *</label>
                   <input type="text" value={form.product_code} onChange={e => setForm({...form, product_code: e.target.value})}
                     className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="ESS-001" required /></div>
-                <div><label className="block text-sm font-medium text-slate-700 mb-1">카테고리</label>
-                  <input type="text" value={form.category} onChange={e => setForm({...form, category: e.target.value})}
-                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="스킨케어" /></div>
+                <div className="relative">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">카테고리</label>
+                  <div
+                    onClick={() => setShowCategoryDropdown(!showCategoryDropdown)}
+                    className={`w-full px-4 py-3 rounded-xl border cursor-pointer flex items-center justify-between ${
+                      showCategoryDropdown ? 'border-indigo-500 ring-2 ring-indigo-200' : 'border-slate-300'
+                    }`}>
+                    <span className={form.category ? 'text-slate-800' : 'text-slate-400'}>{form.category || '카테고리 선택'}</span>
+                    <span className="text-slate-400 text-xs">{showCategoryDropdown ? '▲' : '▼'}</span>
+                  </div>
+                  {showCategoryDropdown && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-50 max-h-60 overflow-y-auto">
+                      {/* 카테고리 목록 */}
+                      <div className="p-2">
+                        <button type="button" onClick={() => { setForm({...form, category: ''}); setShowCategoryDropdown(false) }}
+                          className={`w-full text-left px-3 py-2.5 rounded-lg text-sm hover:bg-slate-50 transition-colors ${
+                            !form.category ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-600'
+                          }`}>선택 안함</button>
+                        {categories.map(c => (
+                          <button type="button" key={c} onClick={() => selectCategory(c)}
+                            className={`w-full text-left px-3 py-2.5 rounded-lg text-sm hover:bg-slate-50 transition-colors ${
+                              form.category === c ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-600'
+                            }`}>{c}</button>
+                        ))}
+                      </div>
+                      {/* 새 카테고리 추가 */}
+                      <div className="border-t border-slate-200 p-3">
+                        <p className="text-xs font-medium text-slate-500 mb-2">새 카테고리 추가</p>
+                        <div className="flex gap-2">
+                          <input type="text" value={newCategory} onChange={e => setNewCategory(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCategory() } }}
+                            className="flex-1 px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none focus:border-indigo-500"
+                            placeholder="카테고리명 입력" />
+                          <button type="button" onClick={addCategory}
+                            className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">추가</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
-              <div><label className="block text-sm font-medium text-slate-700 mb-1">제품명</label>
+              <div><label className="block text-sm font-medium text-slate-700 mb-1">제품명 *</label>
                 <input type="text" value={form.product_name} onChange={e => setForm({...form, product_name: e.target.value})}
                   className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="프리미엄 에센스 50ml" required /></div>
               <div className="grid grid-cols-3 gap-4">
@@ -184,7 +280,7 @@ function Products() {
                 <span className="text-lg font-bold text-indigo-600">{formatNumber((Number(form.purchase_cost)||0)+(Number(form.packaging_cost)||0)+(Number(form.additional_cost)||0))}원</span>
               </div>
               <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => { setShowForm(false); resetForm() }} className="flex-1 py-3 rounded-xl border border-slate-300 text-slate-600 font-medium">취소</button>
+                <button type="button" onClick={() => { setShowForm(false); resetForm(); setShowCategoryDropdown(false) }} className="flex-1 py-3 rounded-xl border border-slate-300 text-slate-600 font-medium">취소</button>
                 <button type="submit" className="flex-1 py-3 rounded-xl bg-indigo-600 text-white font-medium">{editId ? '수정' : '추가'}</button>
               </div>
             </form>
