@@ -11,7 +11,8 @@ function Suppliers() {
   const [loading, setLoading] = useState(true)
   const [form, setForm] = useState({
     supplier_name: '', supplier_code: '', contact_name: '', contact_phone: '',
-    contact_email: '', business_number: '', memo: '', color_code: '#6366f1'
+    contact_email: '', business_number: '', memo: '', color_code: '#6366f1',
+    default_shipping_cost: 4000
   })
 
   useEffect(() => { fetchSuppliers() }, [])
@@ -23,14 +24,15 @@ function Suppliers() {
 
   const resetForm = () => {
     setForm({ supplier_name: '', supplier_code: '', contact_name: '', contact_phone: '',
-      contact_email: '', business_number: '', memo: '', color_code: COLORS[suppliers.length % COLORS.length] })
+      contact_email: '', business_number: '', memo: '', color_code: COLORS[suppliers.length % COLORS.length],
+      default_shipping_cost: 4000 })
     setEditId(null)
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     const user = (await supabase.auth.getUser()).data.user
-    const data = { ...form, sort_order: suppliers.length }
+    const data = { ...form, default_shipping_cost: Number(form.default_shipping_cost) || 4000, sort_order: suppliers.length }
     if (editId) await supabase.from('suppliers').update(data).eq('id', editId)
     else { data.created_by = user.id; await supabase.from('suppliers').insert(data) }
     setShowForm(false); resetForm(); fetchSuppliers()
@@ -40,7 +42,8 @@ function Suppliers() {
     setForm({ supplier_name: s.supplier_name, supplier_code: s.supplier_code || '',
       contact_name: s.contact_name || '', contact_phone: s.contact_phone || '',
       contact_email: s.contact_email || '', business_number: s.business_number || '',
-      memo: s.memo || '', color_code: s.color_code || '#6366f1' })
+      memo: s.memo || '', color_code: s.color_code || '#6366f1',
+      default_shipping_cost: s.default_shipping_cost ?? 4000 })
     setEditId(s.id); setShowForm(true)
   }
 
@@ -50,11 +53,14 @@ function Suppliers() {
     }
   }
 
+  const formatNumber = (num) => Number(num || 0).toLocaleString()
+
   const handleExcelDownload = () => {
     const excelData = suppliers.map(s => ({
       '매입처명': s.supplier_name, '코드': s.supplier_code || '', '담당자': s.contact_name || '',
       '연락처': s.contact_phone || '', '이메일': s.contact_email || '',
-      '사업자번호': s.business_number || '', '메모': s.memo || '',
+      '사업자번호': s.business_number || '', '기본택배비': s.default_shipping_cost ?? 4000,
+      '메모': s.memo || '',
     }))
     const ws = XLSX.utils.json_to_sheet(excelData)
     const wb = XLSX.utils.book_new()
@@ -80,6 +86,7 @@ function Suppliers() {
           supplier_name: name, supplier_code: row['코드'] || row['supplier_code'] || '',
           contact_name: row['담당자'] || '', contact_phone: row['연락처'] || '',
           contact_email: row['이메일'] || '', business_number: row['사업자번호'] || '',
+          default_shipping_cost: Number(row['기본택배비']) || 4000,
           memo: row['메모'] || '', color_code: COLORS[(suppliers.length + count) % COLORS.length],
           sort_order: suppliers.length + count, created_by: user.id,
         })
@@ -132,6 +139,10 @@ function Suppliers() {
               {s.contact_name && <div className="flex justify-between"><span className="text-slate-500">담당자</span><span className="text-slate-700 font-medium">{s.contact_name}</span></div>}
               {s.contact_phone && <div className="flex justify-between"><span className="text-slate-500">연락처</span><span className="text-slate-700 font-medium">{s.contact_phone}</span></div>}
               {s.business_number && <div className="flex justify-between"><span className="text-slate-500">사업자번호</span><span className="text-slate-700 font-medium">{s.business_number}</span></div>}
+              <div className="flex justify-between">
+                <span className="text-slate-500">기본 택배비</span>
+                <span className="text-indigo-600 font-bold">{formatNumber(s.default_shipping_cost ?? 4000)}원</span>
+              </div>
             </div>
           </div>
         ))}
@@ -164,6 +175,27 @@ function Suppliers() {
                   <input type="text" value={form.contact_phone} onChange={e => setForm({...form, contact_phone: e.target.value})}
                     className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" /></div>
               </div>
+
+              {/* 택배비 설정 */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">기본 택배비 (건당)</label>
+                <div className="relative">
+                  <input type="number" value={form.default_shipping_cost} onChange={e => setForm({...form, default_shipping_cost: e.target.value})}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none pr-10" placeholder="4000" />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-slate-400">원</span>
+                </div>
+                <div className="flex gap-2 mt-2">
+                  {[3000, 3500, 4000, 4500, 5000].map(v => (
+                    <button key={v} type="button" onClick={() => setForm({...form, default_shipping_cost: v})}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                        Number(form.default_shipping_cost) === v
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'
+                      }`}>{v.toLocaleString()}원</button>
+                  ))}
+                </div>
+              </div>
+
               <div><label className="block text-sm font-medium text-slate-700 mb-1">메모</label>
                 <textarea value={form.memo} onChange={e => setForm({...form, memo: e.target.value})}
                   className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" rows={2} /></div>
