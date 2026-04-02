@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 
+// 10원 단위 올림 함수
+const roundUp10 = (num) => Math.ceil(num / 10) * 10
+
 function SalesInput() {
   const [channels, setChannels] = useState([])
   const [suppliers, setSuppliers] = useState([])
@@ -12,6 +15,7 @@ function SalesInput() {
   const [productSearch, setProductSearch] = useState('')
   const [showProductDropdown, setShowProductDropdown] = useState(false)
   const [inputMode, setInputMode] = useState('manual')
+  const [priceMode, setPriceMode] = useState('supply') // 'supply' = 공급가 기준, 'selling' = 판매가 직접입력
   const [saving, setSaving] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [excelData, setExcelData] = useState([])
@@ -20,7 +24,7 @@ function SalesInput() {
 
   const [form, setForm] = useState({
     sale_date: new Date().toISOString().split('T')[0],
-    quantity: 1, selling_price: '', shipping_fee_received: '',
+    quantity: 1, supply_price: '', selling_price: '', shipping_fee_received: '',
     commission_type: 'RATE', commission_rate: '', commission_fixed: '',
     shipping_cost: '', additional_fee: '', memo: '',
   })
@@ -30,6 +34,18 @@ function SalesInput() {
   useEffect(() => {
     if (selectedChannel && selectedProduct) loadChannelProductData()
   }, [selectedChannel, selectedProduct])
+
+  // 공급가 → 판매가 자동계산
+  useEffect(() => {
+    if (priceMode === 'supply' && form.supply_price && form.commission_type === 'RATE' && form.commission_rate) {
+      const supply = Number(form.supply_price) || 0
+      const rate = Number(form.commission_rate) || 0
+      if (supply > 0 && rate > 0 && rate < 100) {
+        const calculated = roundUp10(supply / (1 - rate / 100))
+        setForm(prev => ({ ...prev, selling_price: String(calculated) }))
+      }
+    }
+  }, [form.supply_price, form.commission_rate, form.commission_type, priceMode])
 
   const fetchChannels = async () => {
     const { data } = await supabase.from('channels').select('*').eq('is_active', true).order('sort_order')
@@ -96,13 +112,20 @@ function SalesInput() {
     const price = Number(form.selling_price) || 0
     const qty = Number(form.quantity) || 1
     const shippingReceived = Number(form.shipping_fee_received) || 0
-    const totalRevenue = (price * qty) + shippingReceived
+    const totalRevenue = roundUp10((price * qty) + shippingReceived)
+
+    // 수수료: 판매가 - (판매가 × (1-수수료율)) = 판매가에서 공급가를 뺀 금액
     let commission = 0
-    if (form.commission_type === 'RATE') commission = price * qty * (Number(form.commission_rate) || 0) / 100
-    else commission = Number(form.commission_fixed) || 0
-    const productCost = selectedProduct ? Number(selectedProduct.total_cost || 0) * qty : 0
-    const shippingCost = Number(form.shipping_cost) || 0
-    const additionalFee = Number(form.additional_fee) || 0
+    if (form.commission_type === 'RATE') {
+      const rate = Number(form.commission_rate) || 0
+      commission = roundUp10(price * qty - price * qty * (1 - rate / 100))
+    } else {
+      commission = roundUp10(Number(form.commission_fixed) || 0)
+    }
+
+    const productCost = selectedProduct ? roundUp10(Number(selectedProduct.total_cost || 0) * qty) : 0
+    const shippingCost = roundUp10(Number(form.shipping_cost) || 0)
+    const additionalFee = roundUp10(Number(form.additional_fee) || 0)
     const totalCost = productCost + commission + shippingCost + additionalFee
     const netProfit = totalRevenue - totalCost
     const marginRate = totalRevenue > 0 ? ((netProfit / totalRevenue) * 100) : 0
@@ -111,6 +134,16 @@ function SalesInput() {
 
   const margin = calculateMargin()
   const formatNumber = (num) => Number(num || 0).toLocaleString()
+
+  // 공급가 역산 표시 (판매가 입력 시)
+  const getSupplyPrice = () => {
+    const price = Number(form.selling_price) || 0
+    const rate = Number(form.commission_rate) || 0
+    if (price > 0 && rate > 0 && form.commission_type === 'RATE') {
+      return roundUp10(price * (1 - rate / 100))
+    }
+    return 0
+  }
 
   const handleSave = async () => {
     if (!selectedChannel || !selectedProduct) { alert('매출처와 제품을 선택해주세요.'); return }
@@ -158,7 +191,7 @@ function SalesInput() {
       else { cpData.created_by = user.id; cpData.effective_from = new Date().toISOString().split('T')[0]; await supabase.from('channel_products').insert(cpData) }
 
       setSelectedProduct(null); setProductSearch('')
-      setForm(prev => ({ ...prev, quantity: 1, selling_price: '', shipping_fee_received: '', additional_fee: '', memo: '' }))
+      setForm(prev => ({ ...prev, quantity: 1, supply_price: '', selling_price: '', shipping_fee_received: '', additional_fee: '', memo: '' }))
       fetchProducts()
     }
     setSaving(false)
@@ -202,21 +235,21 @@ function SalesInput() {
                   <div className="w-10 h-10 rounded-xl mx-auto mb-2 flex items-center justify-center text-white font-bold text-sm"
                     style={{ backgroundColor: ch.color_code }}>{ch.channel_name.slice(0, 1)}</div>
                   <p className="text-sm font-medium text-slate-700">{ch.channel_name}</p>
-                  <p className="text-xs text-slate-400 mt-0.5">수수료 {ch.default_commission_type === 'RATE' ? `${ch.default_commission_rate}%` : `${formatNumber(ch.default_commission_fixed)}원`}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{ch.default_commission_type === 'RATE' ? `수수료 ${ch.default_commission_rate}%` : `수수료 ${formatNumber(ch.default_commission_fixed)}원`}</p>
                 </button>
               ))}
             </div>
           </div>
 
-          {/* 매입처 선택 (선택사항) */}
+          {/* 매입처 선택 */}
           <div className="bg-white rounded-2xl border border-slate-200 p-6">
             <h3 className="text-sm font-semibold text-slate-800 mb-1">❷ 매입처 선택 <span className="text-xs text-slate-400 font-normal">(선택사항)</span></h3>
-            <p className="text-xs text-slate-400 mb-4">위탁판매 등 매입처를 연결하려면 선택하세요</p>
+            <p className="text-xs text-slate-400 mb-4">위탁판매의 경우 매입처를 선택하세요</p>
             <div className="flex flex-wrap gap-2">
               <button onClick={() => setSelectedSupplier(null)}
                 className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
                   !selectedSupplier ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}>선택 안함</button>
+                }`}>선택안함</button>
               {suppliers.map(s => (
                 <button key={s.id} onClick={() => setSelectedSupplier(s)}
                   className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
@@ -281,7 +314,7 @@ function SalesInput() {
                             <p className="text-xs text-slate-400">{p.product_code} · 원가 {formatNumber(p.total_cost)}원</p>
                           </div>
                         </button>
-                      )) : <p className="text-sm text-slate-400 text-center py-4">검색 결과가 없습니다.</p>}
+                      )) : <p className="text-sm text-slate-400 text-center py-4">검색 결과 없음</p>}
                     </div>
                   )}
                 </div>
@@ -319,24 +352,8 @@ function SalesInput() {
                 </div>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4 mt-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">판매가 (원)</label>
-                <input type="text" value={form.selling_price ? formatNumber(form.selling_price) : ''}
-                  onChange={e => setForm({...form, selling_price: e.target.value.replace(/[^0-9]/g, '')})}
-                  onFocus={e => { if (e.target.value === '0') setForm({...form, selling_price: ''}) }}
-                  className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-right font-medium"
-                  placeholder="판매 단가" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">배송비 수취 (원)</label>
-                <input type="text" value={form.shipping_fee_received ? formatNumber(form.shipping_fee_received) : ''}
-                  onChange={e => setForm({...form, shipping_fee_received: e.target.value.replace(/[^0-9]/g, '')})}
-                  onFocus={e => { if (e.target.value === '0') setForm({...form, shipping_fee_received: ''}) }}
-                  className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-right font-medium"
-                  placeholder="0 (무료배송)" />
-              </div>
-            </div>
+
+            {/* 수수료 */}
             <div className="mt-4">
               <label className="block text-xs font-medium text-slate-500 mb-1">수수료</label>
               <div className="flex gap-2">
@@ -356,14 +373,89 @@ function SalesInput() {
                 )}
               </div>
             </div>
+
+            {/* 가격 입력 모드 전환 */}
+            {form.commission_type === 'RATE' && Number(form.commission_rate) > 0 && (
+              <div className="mt-4">
+                <label className="block text-xs font-medium text-slate-500 mb-2">가격 입력 방식</label>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => setPriceMode('supply')}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+                      priceMode === 'supply' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600'
+                    }`}>공급가 입력 → 판매가 자동계산</button>
+                  <button type="button" onClick={() => setPriceMode('selling')}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
+                      priceMode === 'selling' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600'
+                    }`}>판매가 직접 입력</button>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-4 mt-4">
+              {priceMode === 'supply' && form.commission_type === 'RATE' && Number(form.commission_rate) > 0 ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">공급가 (원) <span className="text-indigo-500">← 입력</span></label>
+                    <input type="text" value={form.supply_price ? formatNumber(form.supply_price) : ''}
+                      onChange={e => setForm({...form, supply_price: e.target.value.replace(/[^0-9]/g, '')})}
+                      onFocus={e => { if (e.target.value === '0') setForm({...form, supply_price: ''}) }}
+                      className="w-full px-4 py-3 rounded-xl border-2 border-indigo-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-right font-medium bg-indigo-50/30"
+                      placeholder="공급가 입력" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">판매가 (원) <span className="text-emerald-500">← 자동계산</span></label>
+                    <div className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-right font-bold text-lg text-emerald-600">
+                      {form.selling_price ? formatNumber(form.selling_price) : '-'}
+                    </div>
+                    {form.supply_price && form.selling_price && (
+                      <p className="text-xs text-slate-400 mt-1 text-right">
+                        {formatNumber(form.supply_price)} ÷ {(1 - Number(form.commission_rate)/100).toFixed(2)} = {formatNumber(form.selling_price)}원
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-500 mb-1">판매가 (원)</label>
+                    <input type="text" value={form.selling_price ? formatNumber(form.selling_price) : ''}
+                      onChange={e => setForm({...form, selling_price: e.target.value.replace(/[^0-9]/g, '')})}
+                      onFocus={e => { if (e.target.value === '0') setForm({...form, selling_price: ''}) }}
+                      className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-right font-medium"
+                      placeholder="판매가 입력" />
+                  </div>
+                  <div>
+                    {form.commission_type === 'RATE' && Number(form.commission_rate) > 0 && Number(form.selling_price) > 0 && (
+                      <>
+                        <label className="block text-xs font-medium text-slate-500 mb-1">공급가 (역산)</label>
+                        <div className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-right font-medium text-slate-600">
+                          {formatNumber(getSupplyPrice())}원
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 gap-4 mt-4">
               <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">실제 배송비 (원) <span className="text-indigo-500">← 제품별 자동설정</span></label>
+                <label className="block text-xs font-medium text-slate-500 mb-1">배송비 수취 (원)</label>
+                <input type="text" value={form.shipping_fee_received ? formatNumber(form.shipping_fee_received) : ''}
+                  onChange={e => setForm({...form, shipping_fee_received: e.target.value.replace(/[^0-9]/g, '')})}
+                  onFocus={e => { if (e.target.value === '0') setForm({...form, shipping_fee_received: ''}) }}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-right font-medium"
+                  placeholder="0 (무료배송)" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">실 배송비 (원) <span className="text-indigo-500">자동매칭</span></label>
                 <input type="text" value={form.shipping_cost ? formatNumber(form.shipping_cost) : ''}
                   onChange={e => setForm({...form, shipping_cost: e.target.value.replace(/[^0-9]/g, '')})}
                   onFocus={e => { if (e.target.value === '0') setForm({...form, shipping_cost: ''}) }}
                   className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-right font-medium" placeholder="0" />
               </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4 mt-4">
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">추가비용 (원)</label>
                 <input type="text" value={form.additional_fee ? formatNumber(form.additional_fee) : ''}
@@ -371,30 +463,39 @@ function SalesInput() {
                   onFocus={e => { if (e.target.value === '0') setForm({...form, additional_fee: ''}) }}
                   className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none text-right font-medium" placeholder="0" />
               </div>
-            </div>
-            <div className="mt-4">
-              <label className="block text-xs font-medium text-slate-500 mb-1">메모 (선택)</label>
-              <input type="text" value={form.memo} onChange={e => setForm({...form, memo: e.target.value})}
-                className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
-                placeholder="예: 냉동배송, 세트상품" />
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">메모 (선택)</label>
+                <input type="text" value={form.memo} onChange={e => setForm({...form, memo: e.target.value})}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
+                  placeholder="비고" />
+              </div>
             </div>
           </div>
 
           {/* 마진 미리보기 */}
           <div className="bg-white rounded-2xl border border-slate-200 p-6">
-            <h3 className="text-sm font-semibold text-slate-800 mb-4">마진 미리보기</h3>
+            <h3 className="text-sm font-semibold text-slate-800 mb-4">마진 계산</h3>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between py-1"><span className="text-slate-500">판매금액</span><span className="text-slate-700">{formatNumber(Number(form.selling_price||0)*Number(form.quantity||1))}원</span></div>
               <div className="flex justify-between py-1"><span className="text-slate-500">+ 배송비 수취</span><span className="text-slate-700">{formatNumber(form.shipping_fee_received)}원</span></div>
               <div className="flex justify-between py-1 font-semibold border-t border-slate-100 pt-2"><span className="text-slate-700">총매출</span><span className="text-indigo-600">{formatNumber(margin.totalRevenue)}원</span></div>
               <div className="flex justify-between py-1 mt-2"><span className="text-slate-500">- 상품원가</span><span className="text-red-500">-{formatNumber(margin.productCost)}원</span></div>
-              <div className="flex justify-between py-1"><span className="text-slate-500">- 수수료</span><span className="text-red-500">-{formatNumber(Math.round(margin.commission))}원</span></div>
+              <div className="flex justify-between py-1">
+                <span className="text-slate-500">- 수수료 {form.commission_type === 'RATE' ? `(${form.commission_rate}% = ÷${(1-Number(form.commission_rate)/100).toFixed(2)})` : ''}</span>
+                <span className="text-red-500">-{formatNumber(margin.commission)}원</span>
+              </div>
               <div className="flex justify-between py-1"><span className="text-slate-500">- 배송비</span><span className="text-red-500">-{formatNumber(margin.shippingCost)}원</span></div>
               {margin.additionalFee > 0 && <div className="flex justify-between py-1"><span className="text-slate-500">- 추가비용</span><span className="text-red-500">-{formatNumber(margin.additionalFee)}원</span></div>}
+              {priceMode === 'supply' && form.supply_price && (
+                <div className="flex justify-between py-1 border-t border-slate-100 pt-2">
+                  <span className="text-slate-500">공급가</span>
+                  <span className="text-slate-700 font-medium">{formatNumber(form.supply_price)}원</span>
+                </div>
+              )}
               <div className="flex justify-between py-3 font-bold border-t-2 border-slate-200 mt-2">
                 <span className="text-slate-800">순이익</span>
                 <span className={margin.netProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}>
-                  {formatNumber(Math.round(margin.netProfit))}원 <span className="text-xs font-medium">({margin.marginRate.toFixed(1)}%)</span>
+                  {formatNumber(roundUp10(margin.netProfit))}원 <span className="text-xs font-medium">({margin.marginRate.toFixed(1)}%)</span>
                 </span>
               </div>
             </div>
@@ -430,7 +531,7 @@ function SalesInput() {
           <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleExcelUpload} className="hidden" />
           {excelData.length > 0 && (
             <div className="mt-6">
-              <h4 className="text-sm font-medium text-slate-700 mb-3">미리보기 (상위 5행)</h4>
+              <h4 className="text-sm font-medium text-slate-700 mb-3">미리보기 (최대 5행)</h4>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead><tr className="bg-slate-50">{Object.keys(excelData[0]).map(key => <th key={key} className="px-3 py-2 text-left font-medium text-slate-500 border-b">{key}</th>)}</tr></thead>
