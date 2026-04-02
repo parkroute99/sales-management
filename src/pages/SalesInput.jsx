@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
@@ -11,32 +10,31 @@ const parseNum = (s) => {
   return Number(String(s).replace(/,/g, '')) || 0
 }
 
-/* ───── 빈 아이템 생성 ───── */
+/* ───── 빈 아이템 ───── */
 const emptyItem = () => ({
   id: Date.now() + Math.random(),
   productId: '',
   productName: '',
   productSearch: '',
+  showDropdown: false,
   quantity: 1,
-  supplyPrice: 0,        // 개당 공급가
-  sellingPrice: 0,        // 개당 판매가
-  priceMode: 'supply',    // 'supply' | 'selling'
+  supplyPrice: 0,
+  sellingPrice: 0,
+  priceMode: 'supply',
   commissionType: 'rate',
   commissionRate: 15,
   commissionFixed: 0,
-  shippingReceived: 0,    // 배송비 수취
-  shippingCost: 3000,     // 실 배송비
+  shippingReceived: 0,
+  shippingCost: 3000,
   additionalFee: 0,
   memo: '',
-  // 제품정보 (선택 시 자동)
   unitCost: 0,
-  purchasePrice: 0,
+  purchaseCost: 0,
   packagingCost: 0,
-  extraCost: 0,
+  additionalCost: 0,
 })
 
 export default function SalesInput() {
-  /* ── 기본 상태 ── */
   const [channels, setChannels] = useState([])
   const [suppliers, setSuppliers] = useState([])
   const [products, setProducts] = useState([])
@@ -50,15 +48,18 @@ export default function SalesInput() {
   const [excelData, setExcelData] = useState(null)
   const [saleDate, setSaleDate] = useState(new Date().toISOString().slice(0, 10))
 
-  /* ── 데이터 로드 ── */
+  /* ── 데이터 로드 (실제 DB 컬럼명에 맞춤) ── */
   useEffect(() => {
     ;(async () => {
       setLoading(true)
       const [chRes, spRes, prRes] = await Promise.all([
-        supabase.from('channels').select('*').eq('is_active', true).order('name'),
-        supabase.from('suppliers').select('*').eq('is_active', true).order('name'),
-        supabase.from('products').select('*, suppliers(name)').eq('is_active', true).order('name'),
+        supabase.from('channels').select('*').order('sort_order'),
+        supabase.from('suppliers').select('*').eq('is_active', true).order('supplier_name'),
+        supabase.from('products').select('*, suppliers(supplier_name)').eq('is_active', true).order('product_name'),
       ])
+      if (chRes.error) console.error('channels error:', chRes.error)
+      if (spRes.error) console.error('suppliers error:', spRes.error)
+      if (prRes.error) console.error('products error:', prRes.error)
       setChannels(chRes.data || [])
       setSuppliers(spRes.data || [])
       setProducts(prRes.data || [])
@@ -66,16 +67,16 @@ export default function SalesInput() {
     })()
   }, [])
 
-  /* ── 채널 선택 시 수수료 기본값 ── */
+  /* ── 채널 선택 ── */
   const handleChannelSelect = (ch) => {
     setSelectedChannel(ch)
     setItems((prev) =>
       prev.map((it) => ({
         ...it,
-        commissionType: ch.commission_type === 'fixed' ? 'fixed' : 'rate',
-        commissionRate: ch.commission_rate ?? 15,
-        commissionFixed: ch.commission_fixed ?? 0,
-        shippingReceived: ch.default_shipping_fee ?? 0,
+        commissionType: ch.default_commission_type === 'fixed' ? 'fixed' : 'rate',
+        commissionRate: ch.default_commission_rate ?? 15,
+        commissionFixed: ch.default_commission_fixed ?? 0,
+        shippingReceived: ch.default_shipping_cost ?? 0,
       }))
     )
   }
@@ -87,27 +88,28 @@ export default function SalesInput() {
       next[idx] = {
         ...next[idx],
         productId: product.id,
-        productName: product.name,
-        productSearch: product.name,
-        unitCost: product.cost ?? 0,
-        purchasePrice: product.purchase_price ?? 0,
+        productName: product.product_name,
+        productSearch: product.product_name,
+        showDropdown: false,
+        unitCost: product.total_cost ?? 0,
+        purchaseCost: product.purchase_cost ?? 0,
         packagingCost: product.packaging_cost ?? 0,
-        extraCost: product.extra_cost ?? 0,
+        additionalCost: product.additional_cost ?? 0,
       }
       return next
     })
   }
 
-  /* ── 아이템 필드 업데이트 ── */
-  const updateItem = useCallback((idx, field, value) => {
+  /* ── 필드 업데이트 ── */
+  const updateItem = useCallback((idx, updates) => {
     setItems((prev) => {
       const next = [...prev]
-      next[idx] = { ...next[idx], [field]: value }
+      next[idx] = { ...next[idx], ...updates }
       return next
     })
   }, [])
 
-  /* ── 공급가 → 판매가 계산 ── */
+  /* ── 가격 계산 ── */
   const calcSellingFromSupply = (supply, item) => {
     if (item.commissionType === 'rate') {
       const rate = item.commissionRate / 100
@@ -116,7 +118,6 @@ export default function SalesInput() {
     return roundUp10(supply + item.commissionFixed)
   }
 
-  /* ── 판매가 → 공급가 역산 ── */
   const calcSupplyFromSelling = (selling, item) => {
     if (item.commissionType === 'rate') {
       const rate = item.commissionRate / 100
@@ -125,7 +126,6 @@ export default function SalesInput() {
     return roundUp10(selling - item.commissionFixed)
   }
 
-  /* ── 수수료 금액 ── */
   const getCommission = (item) => {
     if (item.commissionType === 'rate') {
       return roundUp10(item.sellingPrice * (item.commissionRate / 100))
@@ -133,7 +133,7 @@ export default function SalesInput() {
     return item.commissionFixed
   }
 
-  /* ── 마진 계산 (아이템 1건) ── */
+  /* ── 마진 계산 ── */
   const calcMargin = (item) => {
     const qty = item.quantity
     const revenue = item.sellingPrice * qty
@@ -149,7 +149,6 @@ export default function SalesInput() {
     return { revenue, cost, commission, supplyTotal, shippingRcv, shippingReal, additional, supplyPlusShipping, profit, marginRate }
   }
 
-  /* ── 전체 합산 ── */
   const totalMargin = () => {
     let r = { revenue: 0, cost: 0, commission: 0, supplyTotal: 0, shippingRcv: 0, shippingReal: 0, additional: 0, supplyPlusShipping: 0, profit: 0 }
     items.forEach((it) => {
@@ -160,25 +159,26 @@ export default function SalesInput() {
     return r
   }
 
-  /* ── 아이템 추가/제거 ── */
+  /* ── 아이템 관리 ── */
   const addItem = () => {
     const base = emptyItem()
     if (selectedChannel) {
-      base.commissionType = selectedChannel.commission_type === 'fixed' ? 'fixed' : 'rate'
-      base.commissionRate = selectedChannel.commission_rate ?? 15
-      base.commissionFixed = selectedChannel.commission_fixed ?? 0
-      base.shippingReceived = selectedChannel.default_shipping_fee ?? 0
+      base.commissionType = selectedChannel.default_commission_type === 'fixed' ? 'fixed' : 'rate'
+      base.commissionRate = selectedChannel.default_commission_rate ?? 15
+      base.commissionFixed = selectedChannel.default_commission_fixed ?? 0
+      base.shippingReceived = selectedChannel.default_shipping_cost ?? 0
     }
     setItems((prev) => [...prev, base])
     setActiveIdx(items.length)
   }
+
   const removeItem = (idx) => {
     if (items.length <= 1) return
-    setItems((prev) => prev.filter((_, i) => i !== idx))
-    setActiveIdx((prev) => Math.min(prev, items.length - 2))
+    const next = items.filter((_, i) => i !== idx)
+    setItems(next)
+    setActiveIdx(Math.min(activeIdx, next.length - 1))
   }
 
-  /* ── 수량 ── */
   const changeQty = (idx, delta) => {
     setItems((prev) => {
       const next = [...prev]
@@ -187,7 +187,7 @@ export default function SalesInput() {
     })
   }
 
-  /* ── 가격 변경 핸들러 ── */
+  /* ── 가격 입력 ── */
   const handleSupplyChange = (idx, val) => {
     const supply = parseNum(val)
     setItems((prev) => {
@@ -198,6 +198,7 @@ export default function SalesInput() {
       return next
     })
   }
+
   const handleSellingChange = (idx, val) => {
     const selling = parseNum(val)
     setItems((prev) => {
@@ -208,11 +209,11 @@ export default function SalesInput() {
       return next
     })
   }
+
   const handleCommissionChange = (idx, field, val) => {
     setItems((prev) => {
       const next = [...prev]
-      const item = { ...next[idx], [field]: parseNum(val) }
-      // 재계산
+      const item = { ...next[idx], [field]: field === 'commissionType' ? val : parseNum(val) }
       if (item.priceMode === 'supply') {
         item.sellingPrice = calcSellingFromSupply(item.supplyPrice, item)
       } else {
@@ -223,16 +224,18 @@ export default function SalesInput() {
     })
   }
 
-  /* ── 필터된 제품 목록 ── */
+  /* ── 제품 검색 ── */
   const filteredProducts = (search) => {
     if (!search) return products.slice(0, 20)
     const s = search.toLowerCase()
-    return products.filter(
-      (p) =>
-        p.name?.toLowerCase().includes(s) ||
-        p.code?.toLowerCase().includes(s) ||
-        p.suppliers?.name?.toLowerCase().includes(s)
-    ).slice(0, 20)
+    return products
+      .filter(
+        (p) =>
+          p.product_name?.toLowerCase().includes(s) ||
+          p.product_code?.toLowerCase().includes(s) ||
+          p.suppliers?.supplier_name?.toLowerCase().includes(s)
+      )
+      .slice(0, 20)
   }
 
   /* ── 저장 ── */
@@ -260,32 +263,24 @@ export default function SalesInput() {
           commission_fixed: item.commissionFixed,
           commission_amount: m.commission,
           shipping_fee_received: item.shippingReceived,
-          shipping_cost: item.shippingCost,
+          shipping_cost: m.shippingReal,
           additional_fee: item.additionalFee,
           product_cost: m.cost,
           total_revenue: m.revenue,
-          profit: m.profit,
+          total_cost: m.cost + m.commission + m.shippingReal + m.additional,
+          net_profit: m.profit,
           margin_rate: parseFloat(m.marginRate),
           memo: item.memo,
+          input_method: 'manual',
         }
         const { error } = await supabase.from('sales').insert(record)
         if (error) throw error
-
-        // channel_products upsert
-        await supabase.from('channel_products').upsert(
-          {
-            channel_id: selectedChannel.id,
-            product_id: item.productId,
-            selling_price: item.sellingPrice,
-            supply_price: item.supplyPrice,
-          },
-          { onConflict: 'channel_id,product_id' }
-        )
       }
       alert(`${items.length}건 매출이 등록되었습니다`)
       setItems([emptyItem()])
       setActiveIdx(0)
     } catch (err) {
+      console.error('Save error:', err)
       alert('저장 실패: ' + err.message)
     } finally {
       setSaving(false)
@@ -306,7 +301,6 @@ export default function SalesInput() {
     reader.readAsBinaryString(file)
   }
 
-  /* ── 현재 아이템 ── */
   const cur = items[activeIdx] || items[0]
   const curIdx = activeIdx
 
@@ -322,20 +316,18 @@ export default function SalesInput() {
 
   return (
     <div className="max-w-5xl mx-auto p-4 space-y-6">
-      {/* ===== 헤더 ===== */}
+      {/* 헤더 */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-800">매출 등록</h1>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setShowExcel(!showExcel)}
-            className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 hover:bg-gray-50"
-          >
-            엑셀 업로드
-          </button>
-        </div>
+        <button
+          onClick={() => setShowExcel(!showExcel)}
+          className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 hover:bg-gray-50"
+        >
+          엑셀 업로드
+        </button>
       </div>
 
-      {/* ===== 엑셀 업로드 패널 ===== */}
+      {/* 엑셀 업로드 */}
       {showExcel && (
         <div className="bg-white rounded-xl border p-4 space-y-3">
           <h3 className="font-semibold text-gray-700">엑셀 업로드</h3>
@@ -360,13 +352,12 @@ export default function SalesInput() {
                   ))}
                 </tbody>
               </table>
-              <p className="text-gray-500 mt-1">미리보기 (최대 5행)</p>
             </div>
           )}
         </div>
       )}
 
-      {/* ===== 매출일 ===== */}
+      {/* 매출일 */}
       <div className="bg-white rounded-xl border p-4">
         <label className="block text-sm font-medium text-gray-600 mb-1">매출일</label>
         <input
@@ -377,7 +368,7 @@ export default function SalesInput() {
         />
       </div>
 
-      {/* ===== 매출처 선택 ===== */}
+      {/* 매출처 선택 */}
       <div className="bg-white rounded-xl border p-4 space-y-3">
         <h3 className="text-sm font-semibold text-gray-600">매출처 (채널) 선택</h3>
         <div className="flex flex-wrap gap-2">
@@ -390,23 +381,23 @@ export default function SalesInput() {
                   ? 'text-white shadow-md'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
               }`}
-              style={selectedChannel?.id === ch.id ? { backgroundColor: ch.color || '#3B82F6' } : {}}
+              style={selectedChannel?.id === ch.id ? { backgroundColor: ch.color_code || '#3B82F6' } : {}}
             >
-              {ch.name}
+              {ch.channel_name}
             </button>
           ))}
         </div>
         {selectedChannel && (
           <p className="text-xs text-gray-500">
-            수수료: {selectedChannel.commission_type === 'fixed'
-              ? `${fmt(selectedChannel.commission_fixed)}원`
-              : `${selectedChannel.commission_rate}%`}
-            {' · '}기본 배송비 수취: {fmt(selectedChannel.default_shipping_fee)}원
+            수수료: {selectedChannel.default_commission_type === 'fixed'
+              ? `${fmt(selectedChannel.default_commission_fixed)}원`
+              : `${selectedChannel.default_commission_rate}%`}
+            {' · '}기본 배송비: {fmt(selectedChannel.default_shipping_cost)}원
           </p>
         )}
       </div>
 
-      {/* ===== 매입처 선택 (선택사항) ===== */}
+      {/* 매입처 선택 */}
       <div className="bg-white rounded-xl border p-4 space-y-2">
         <h3 className="text-sm font-semibold text-gray-600">매입처 (선택)</h3>
         <select
@@ -416,12 +407,12 @@ export default function SalesInput() {
         >
           <option value="">선택 안 함</option>
           {suppliers.map((s) => (
-            <option key={s.id} value={s.id}>{s.name}</option>
+            <option key={s.id} value={s.id}>{s.supplier_name}</option>
           ))}
         </select>
       </div>
 
-      {/* ===== 아이템 탭 ===== */}
+      {/* 아이템 탭 */}
       <div className="bg-white rounded-xl border p-4 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-gray-600">제품 목록</h3>
@@ -430,7 +421,6 @@ export default function SalesInput() {
           </button>
         </div>
 
-        {/* 탭 */}
         <div className="flex flex-wrap gap-1">
           {items.map((it, idx) => (
             <div key={it.id} className="flex items-center">
@@ -445,7 +435,7 @@ export default function SalesInput() {
               {items.length > 1 && (
                 <button
                   onClick={() => removeItem(idx)}
-                  className="ml-0.5 px-1.5 py-1 text-xs text-red-400 hover:text-red-600 rounded-t-lg bg-gray-50 hover:bg-red-50"
+                  className="ml-0.5 px-1.5 py-1 text-xs text-red-400 hover:text-red-600 bg-gray-50 hover:bg-red-50 rounded-t-lg"
                 >
                   ✕
                 </button>
@@ -454,64 +444,65 @@ export default function SalesInput() {
           ))}
         </div>
 
-        {/* ===== 아이템 입력 폼 ===== */}
+        {/* 아이템 입력 폼 */}
         <div className="border rounded-lg p-4 space-y-4 bg-gray-50">
           {/* 제품 검색 */}
-          <div>
+          <div className="relative">
             <label className="block text-xs font-medium text-gray-500 mb-1">제품 검색</label>
-            <input
-              type="text"
-              placeholder="제품명 또는 코드로 검색..."
-              value={cur.productSearch}
-              onChange={(e) => updateItem(curIdx, 'productSearch', e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm"
-            />
-            {cur.productSearch && !cur.productId && (
-              <div className="mt-1 bg-white border rounded-lg max-h-40 overflow-auto">
-                {filteredProducts(cur.productSearch).map((p) => (
-                  <button
-                    key={p.id}
-                    onClick={() => handleProductSelect(curIdx, p)}
-                    className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b last:border-0"
-                  >
-                    <span className="font-medium">{p.name}</span>
-                    {p.code && <span className="text-gray-400 ml-2">({p.code})</span>}
-                    <span className="text-gray-500 ml-2">원가 {fmt(p.cost ?? 0)}원</span>
-                    {p.suppliers?.name && <span className="text-xs text-blue-400 ml-2">{p.suppliers.name}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-            {cur.productId && (
-              <div className="mt-1 flex items-center gap-2">
+            {cur.productId ? (
+              <div className="flex items-center gap-2">
                 <span className="text-sm text-green-600 font-medium">✓ {cur.productName}</span>
                 <button
-                  onClick={() => {
-                    updateItem(curIdx, 'productId', '')
-                    updateItem(curIdx, 'productName', '')
-                    updateItem(curIdx, 'productSearch', '')
-                    updateItem(curIdx, 'unitCost', 0)
-                  }}
+                  onClick={() => updateItem(curIdx, { productId: '', productName: '', productSearch: '', showDropdown: false, unitCost: 0, purchaseCost: 0, packagingCost: 0, additionalCost: 0 })}
                   className="text-xs text-gray-400 hover:text-red-500"
                 >
                   변경
                 </button>
               </div>
+            ) : (
+              <>
+                <input
+                  type="text"
+                  placeholder="제품명 또는 코드로 검색..."
+                  value={cur.productSearch}
+                  onChange={(e) => updateItem(curIdx, { productSearch: e.target.value, showDropdown: true })}
+                  onFocus={() => updateItem(curIdx, { showDropdown: true })}
+                  className="w-full border rounded-lg px-3 py-2 text-sm"
+                />
+                {cur.showDropdown && (
+                  <div className="absolute z-10 left-0 right-0 mt-1 bg-white border rounded-lg shadow-lg max-h-48 overflow-auto">
+                    {filteredProducts(cur.productSearch).map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => handleProductSelect(curIdx, p)}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b last:border-0"
+                      >
+                        <span className="font-medium">{p.product_name}</span>
+                        {p.product_code && <span className="text-gray-400 ml-2">({p.product_code})</span>}
+                        <span className="text-gray-500 ml-2">원가 {fmt(p.total_cost ?? 0)}원</span>
+                        {p.suppliers?.supplier_name && (
+                          <span className="text-xs text-blue-400 ml-2">{p.suppliers.supplier_name}</span>
+                        )}
+                      </button>
+                    ))}
+                    {filteredProducts(cur.productSearch).length === 0 && (
+                      <p className="px-3 py-2 text-sm text-gray-400">검색 결과 없음</p>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </div>
 
-          {/* 원가 표시 + 수량 (가로 배치) */}
+          {/* 원가 + 수량 */}
           <div className="grid grid-cols-2 gap-4">
-            {/* 원가 */}
             <div className="bg-white border rounded-lg p-3">
               <p className="text-xs text-gray-500 mb-1">개당 원가</p>
               <p className="text-lg font-bold text-gray-800">{fmt(cur.unitCost)}원</p>
               <p className="text-xs text-gray-400 mt-1">
-                매입가 {fmt(cur.purchasePrice)} + 포장비 {fmt(cur.packagingCost)} + 기타 {fmt(cur.extraCost)}
+                매입가 {fmt(cur.purchaseCost)} + 포장비 {fmt(cur.packagingCost)} + 기타 {fmt(cur.additionalCost)}
               </p>
             </div>
-
-            {/* 수량 */}
             <div className="bg-white border rounded-lg p-3">
               <p className="text-xs text-gray-500 mb-1">수량</p>
               <div className="flex items-center gap-3">
@@ -525,7 +516,7 @@ export default function SalesInput() {
                   type="number"
                   min="1"
                   value={cur.quantity}
-                  onChange={(e) => updateItem(curIdx, 'quantity', Math.max(1, parseInt(e.target.value) || 1))}
+                  onChange={(e) => updateItem(curIdx, { quantity: Math.max(1, parseInt(e.target.value) || 1) })}
                   className="w-16 text-center border rounded-lg py-1 text-lg font-bold"
                 />
                 <button
@@ -539,10 +530,10 @@ export default function SalesInput() {
             </div>
           </div>
 
-          {/* 가격 모드 토글 */}
-          <div className="flex items-center gap-2 mb-2">
+          {/* 가격 모드 */}
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => updateItem(curIdx, 'priceMode', 'supply')}
+              onClick={() => updateItem(curIdx, { priceMode: 'supply' })}
               className={`px-3 py-1 text-xs rounded-full ${
                 cur.priceMode === 'supply' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-600'
               }`}
@@ -550,7 +541,7 @@ export default function SalesInput() {
               공급가 입력 → 판매가 자동
             </button>
             <button
-              onClick={() => updateItem(curIdx, 'priceMode', 'selling')}
+              onClick={() => updateItem(curIdx, { priceMode: 'selling' })}
               className={`px-3 py-1 text-xs rounded-full ${
                 cur.priceMode === 'selling' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-600'
               }`}
@@ -559,49 +550,36 @@ export default function SalesInput() {
             </button>
           </div>
 
-          {/* 공급가 · 판매가 · 수수료 (3열) */}
+          {/* 공급가 · 판매가 · 수수료 */}
           <div className="grid grid-cols-3 gap-3">
-            {/* 공급가 */}
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">
-                개당 공급가
-                {cur.priceMode === 'supply' && <span className="text-blue-500 ml-1">(입력)</span>}
-                {cur.priceMode === 'selling' && <span className="text-gray-400 ml-1">(자동)</span>}
+                개당 공급가 {cur.priceMode === 'supply' ? <span className="text-blue-500">(입력)</span> : <span className="text-gray-400">(자동)</span>}
               </label>
               <input
                 type="text"
                 value={fmt(cur.supplyPrice)}
-                onChange={(e) => {
-                  if (cur.priceMode === 'supply') handleSupplyChange(curIdx, e.target.value)
-                }}
-                readOnly={cur.priceMode === 'selling'}
+                onChange={(e) => cur.priceMode === 'supply' && handleSupplyChange(curIdx, e.target.value)}
+                readOnly={cur.priceMode !== 'supply'}
                 className={`w-full border rounded-lg px-3 py-2 text-sm text-right font-medium ${
-                  cur.priceMode === 'supply' ? 'bg-white border-blue-300' : 'bg-gray-100 text-gray-500'
+                  cur.priceMode === 'supply' ? 'bg-white border-blue-300 focus:ring-1 focus:ring-blue-400' : 'bg-gray-100 text-gray-500'
                 }`}
               />
             </div>
-
-            {/* 판매가 */}
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">
-                개당 판매가
-                {cur.priceMode === 'selling' && <span className="text-blue-500 ml-1">(입력)</span>}
-                {cur.priceMode === 'supply' && <span className="text-gray-400 ml-1">(자동)</span>}
+                개당 판매가 {cur.priceMode === 'selling' ? <span className="text-blue-500">(입력)</span> : <span className="text-gray-400">(자동)</span>}
               </label>
               <input
                 type="text"
                 value={fmt(cur.sellingPrice)}
-                onChange={(e) => {
-                  if (cur.priceMode === 'selling') handleSellingChange(curIdx, e.target.value)
-                }}
-                readOnly={cur.priceMode === 'supply'}
+                onChange={(e) => cur.priceMode === 'selling' && handleSellingChange(curIdx, e.target.value)}
+                readOnly={cur.priceMode !== 'selling'}
                 className={`w-full border rounded-lg px-3 py-2 text-sm text-right font-medium ${
-                  cur.priceMode === 'selling' ? 'bg-white border-blue-300' : 'bg-gray-100 text-gray-500'
+                  cur.priceMode === 'selling' ? 'bg-white border-blue-300 focus:ring-1 focus:ring-blue-400' : 'bg-gray-100 text-gray-500'
                 }`}
               />
             </div>
-
-            {/* 수수료 */}
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">수수료</label>
               <div className="flex gap-1 mb-1">
@@ -620,7 +598,7 @@ export default function SalesInput() {
                     onChange={(e) => handleCommissionChange(curIdx, 'commissionRate', e.target.value)}
                     className="w-full border rounded-lg px-3 py-2 text-sm text-right"
                   />
-                  <span className="text-sm text-gray-500">%</span>
+                  <span className="text-sm text-gray-500 whitespace-nowrap">%</span>
                 </div>
               ) : (
                 <div className="flex items-center gap-1">
@@ -630,21 +608,21 @@ export default function SalesInput() {
                     onChange={(e) => handleCommissionChange(curIdx, 'commissionFixed', e.target.value)}
                     className="w-full border rounded-lg px-3 py-2 text-sm text-right"
                   />
-                  <span className="text-sm text-gray-500">원</span>
+                  <span className="text-sm text-gray-500 whitespace-nowrap">원</span>
                 </div>
               )}
               <p className="text-xs text-gray-400 mt-1">수수료: {fmt(getCommission(cur))}원/개</p>
             </div>
           </div>
 
-          {/* 배송비 · 추가비용 · 메모 (3열) */}
+          {/* 배송비 · 추가비용 · 메모 */}
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">배송비 수취 (개당)</label>
               <input
                 type="text"
                 value={fmt(cur.shippingReceived)}
-                onChange={(e) => updateItem(curIdx, 'shippingReceived', parseNum(e.target.value))}
+                onChange={(e) => updateItem(curIdx, { shippingReceived: parseNum(e.target.value) })}
                 className="w-full border rounded-lg px-3 py-2 text-sm text-right"
               />
             </div>
@@ -653,7 +631,7 @@ export default function SalesInput() {
               <input
                 type="text"
                 value={fmt(cur.shippingCost)}
-                onChange={(e) => updateItem(curIdx, 'shippingCost', parseNum(e.target.value))}
+                onChange={(e) => updateItem(curIdx, { shippingCost: parseNum(e.target.value) })}
                 className="w-full border rounded-lg px-3 py-2 text-sm text-right"
               />
             </div>
@@ -662,7 +640,7 @@ export default function SalesInput() {
               <input
                 type="text"
                 value={fmt(cur.additionalFee)}
-                onChange={(e) => updateItem(curIdx, 'additionalFee', parseNum(e.target.value))}
+                onChange={(e) => updateItem(curIdx, { additionalFee: parseNum(e.target.value) })}
                 className="w-full border rounded-lg px-3 py-2 text-sm text-right"
               />
             </div>
@@ -672,66 +650,49 @@ export default function SalesInput() {
             <input
               type="text"
               value={cur.memo}
-              onChange={(e) => updateItem(curIdx, 'memo', e.target.value)}
+              onChange={(e) => updateItem(curIdx, { memo: e.target.value })}
               placeholder="메모 (선택)"
               className="w-full border rounded-lg px-3 py-2 text-sm"
             />
           </div>
 
           {/* 개별 마진 미리보기 */}
-          {cur.productId && (
-            <div className="bg-white border rounded-lg p-3 space-y-1">
-              <h4 className="text-xs font-semibold text-gray-500 mb-2">이 제품 마진 미리보기</h4>
-              {(() => {
-                const m = calcMargin(cur)
-                return (
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">총 매출</span>
-                      <span className="font-medium">{fmt(m.revenue)}원</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">총 원가</span>
-                      <span className="font-medium text-red-500">-{fmt(m.cost)}원</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">수수료</span>
-                      <span className="font-medium text-red-500">-{fmt(m.commission)}원</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">배송비</span>
-                      <span className="font-medium text-red-500">-{fmt(m.shippingReal)}원</span>
-                    </div>
-                    <div className="flex justify-between border-t pt-1 col-span-2">
-                      <span className="text-blue-600 font-semibold">공급가 합계</span>
-                      <span className="font-bold text-blue-600">{fmt(m.supplyTotal)}원</span>
-                    </div>
-                    <div className="flex justify-between col-span-2">
-                      <span className="text-blue-600 font-semibold">공급가 + 배송비수취</span>
-                      <span className="font-bold text-blue-600">{fmt(m.supplyPlusShipping)}원</span>
-                    </div>
-                    <div className="flex justify-between border-t pt-1 col-span-2">
-                      <span className={`font-bold ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        순이익
-                      </span>
-                      <span className={`font-bold ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        {fmt(m.profit)}원 ({m.marginRate}%)
-                      </span>
-                    </div>
+          {cur.productId && (() => {
+            const m = calcMargin(cur)
+            return (
+              <div className="bg-white border rounded-lg p-3 space-y-1">
+                <h4 className="text-xs font-semibold text-gray-500 mb-2">이 제품 마진 미리보기</h4>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                  <div className="flex justify-between"><span className="text-gray-500">총 매출</span><span className="font-medium">{fmt(m.revenue)}원</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">총 원가</span><span className="font-medium text-red-500">-{fmt(m.cost)}원</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">수수료</span><span className="font-medium text-red-500">-{fmt(m.commission)}원</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">배송비</span><span className="font-medium text-red-500">-{fmt(m.shippingReal)}원</span></div>
+                  <div className="flex justify-between border-t pt-1 col-span-2">
+                    <span className="text-blue-600 font-semibold">공급가 합계</span>
+                    <span className="font-bold text-blue-600">{fmt(m.supplyTotal)}원</span>
                   </div>
-                )
-              })()}
-            </div>
-          )}
+                  <div className="flex justify-between col-span-2">
+                    <span className="text-blue-600 font-semibold">공급가 + 배송비수취</span>
+                    <span className="font-bold text-blue-600">{fmt(m.supplyPlusShipping)}원</span>
+                  </div>
+                  <div className="flex justify-between border-t pt-1 col-span-2">
+                    <span className={`font-bold ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>순이익</span>
+                    <span className={`font-bold ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {fmt(m.profit)}원 ({m.marginRate}%)
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
         </div>
       </div>
 
-      {/* ===== 전체 마진 요약 ===== */}
+      {/* 전체 마진 요약 */}
       {items.some((it) => it.productId) && (
         <div className="bg-white rounded-xl border p-4 space-y-3">
-          <h3 className="text-sm font-semibold text-gray-600">전체 마진 요약 ({items.length}건)</h3>
+          <h3 className="text-sm font-semibold text-gray-600">전체 마진 요약 ({items.filter(it => it.productId).length}건)</h3>
 
-          {/* 제품별 요약 테이블 */}
           <div className="overflow-auto">
             <table className="w-full text-sm">
               <thead>
@@ -746,7 +707,7 @@ export default function SalesInput() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((it, idx) => {
+                {items.map((it) => {
                   if (!it.productId) return null
                   const m = calcMargin(it)
                   return (
@@ -757,9 +718,7 @@ export default function SalesInput() {
                       <td className="px-2 py-1.5 text-right">{fmt(m.revenue)}</td>
                       <td className="px-2 py-1.5 text-right text-red-500">{fmt(m.cost)}</td>
                       <td className="px-2 py-1.5 text-right text-red-500">{fmt(m.commission)}</td>
-                      <td className={`px-2 py-1.5 text-right font-medium ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        {fmt(m.profit)}
-                      </td>
+                      <td className={`px-2 py-1.5 text-right font-medium ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmt(m.profit)}</td>
                     </tr>
                   )
                 })}
@@ -767,7 +726,6 @@ export default function SalesInput() {
             </table>
           </div>
 
-          {/* 합산 카드 */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div className="bg-blue-50 rounded-lg p-3">
               <p className="text-xs text-blue-500">총 매출</p>
@@ -787,7 +745,6 @@ export default function SalesInput() {
             </div>
           </div>
 
-          {/* 공급가 + 배송비수취 하이라이트 */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
               <p className="text-xs text-indigo-500">공급가 합계</p>
@@ -799,24 +756,19 @@ export default function SalesInput() {
             </div>
           </div>
 
-          {/* 순이익 */}
           <div className={`rounded-lg p-4 ${tm.profit >= 0 ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
             <div className="flex items-center justify-between">
               <div>
                 <p className={`text-xs ${tm.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>순이익</p>
-                <p className={`text-2xl font-bold ${tm.profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-                  {fmt(tm.profit)}원
-                </p>
+                <p className={`text-2xl font-bold ${tm.profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmt(tm.profit)}원</p>
               </div>
-              <div className={`text-3xl font-bold ${tm.profit >= 0 ? 'text-green-300' : 'text-red-300'}`}>
-                {tm.marginRate}%
-              </div>
+              <div className={`text-3xl font-bold ${tm.profit >= 0 ? 'text-green-300' : 'text-red-300'}`}>{tm.marginRate}%</div>
             </div>
           </div>
         </div>
       )}
 
-      {/* ===== 저장 버튼 ===== */}
+      {/* 저장 버튼 */}
       <button
         onClick={handleSave}
         disabled={saving || !selectedChannel || !items.some((it) => it.productId)}
