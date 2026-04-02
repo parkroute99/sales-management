@@ -2,13 +2,12 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 
-const SHIPPING_COST = 4000
-
 function OrderInput() {
   const [suppliers, setSuppliers] = useState([])
   const [aliases, setAliases] = useState([])
   const [senderProfiles, setSenderProfiles] = useState([])
   const [selectedSupplier, setSelectedSupplier] = useState(null)
+  const [shippingCost, setShippingCost] = useState(4000)
   const [orderDate, setOrderDate] = useState(new Date().toISOString().split('T')[0])
   const [items, setItems] = useState([])
   const [currentItem, setCurrentItem] = useState({ name: '', phone: '', address: '', message: '', products: [{ keyword: '', matched: null, qty: 1 }] })
@@ -27,14 +26,10 @@ function OrderInput() {
   }
 
   const fetchAliases = async () => {
-    // 방법1: 선택된 매입처 약어 + 매입처 미지정 약어 모두 조회
     const { data: data1 } = await supabase.from('product_aliases').select('*').eq('supplier_id', selectedSupplier.id)
     const { data: data2 } = await supabase.from('product_aliases').select('*').is('supplier_id', null)
-    // 방법2: 전체 약어도 백업으로 조회
     const { data: dataAll } = await supabase.from('product_aliases').select('*')
-
     const combined = [...(data1 || []), ...(data2 || [])]
-    // 매입처 연결된 게 하나도 없으면 전체를 사용
     const finalAliases = combined.length > 0 ? combined : (dataAll || [])
     setAliases(finalAliases)
     setDebugInfo(`매입처별: ${(data1||[]).length}개, 미지정: ${(data2||[]).length}개, 전체: ${(dataAll||[]).length}개 → 사용: ${finalAliases.length}개`)
@@ -42,6 +37,8 @@ function OrderInput() {
 
   const selectSupplier = (s) => {
     setSelectedSupplier(s)
+    // 매입처별 택배비 자동 설정
+    setShippingCost(s.default_shipping_cost ?? 4000)
     const profile = senderProfiles.find(p => p.supplier_id === s.id)
     if (profile) setSenderForm({ sender_name: profile.sender_name, sender_phone: profile.sender_phone, sender_address: profile.sender_address, bank_info: profile.bank_info || '', deposit_name: profile.deposit_name || '' })
     else setSenderForm({ sender_name: '', sender_phone: '', sender_address: '', bank_info: '', deposit_name: '' })
@@ -50,13 +47,10 @@ function OrderInput() {
   const matchProduct = (keyword) => {
     if (!keyword || aliases.length === 0) return null
     const lower = keyword.trim().toLowerCase()
-    // 1. 정확히 일치
     const exact = aliases.find(a => a.alias.toLowerCase() === lower)
     if (exact) return exact
-    // 2. 부분 일치 (입력값이 약어를 포함하거나, 약어가 입력값을 포함)
     const partial = aliases.find(a => lower.includes(a.alias.toLowerCase()) || a.alias.toLowerCase().includes(lower))
     if (partial) return partial
-    // 3. 정식명칭에서 검색
     const byName = aliases.find(a => a.product_full_name.toLowerCase().includes(lower) || lower.includes(a.product_full_name.toLowerCase()))
     return byName || null
   }
@@ -136,63 +130,37 @@ function OrderInput() {
 
   const downloadExcel = () => {
     if (items.length === 0) { alert('주문 내역이 없습니다.'); return }
-
     const summary = getSummary()
     const wb = XLSX.utils.book_new()
 
     const sheetData = items.map(item => ({
-      '수취인명': item.name,
-      '수취인 연락처': item.phone,
-      '배송지': item.address,
-      '배송메세지': item.message || '',
-      '옵션명': getOptionText(item),
-      '수량': getTotalQty(item),
-      '발송인': senderForm.sender_name || '',
-      '발송인연락처': senderForm.sender_phone || '',
-      '발송인주소': senderForm.sender_address || '',
-      '운송장번호': '',
+      '수취인명': item.name, '수취인 연락처': item.phone,
+      '배송지': item.address, '배송메세지': item.message || '',
+      '옵션명': getOptionText(item), '수량': getTotalQty(item),
+      '발송인': senderForm.sender_name || '', '발송인연락처': senderForm.sender_phone || '',
+      '발송인주소': senderForm.sender_address || '', '운송장번호': '',
     }))
     const ws1 = XLSX.utils.json_to_sheet(sheetData)
-    ws1['!cols'] = [
-      { wch: 10 }, { wch: 15 }, { wch: 60 }, { wch: 35 }, { wch: 40 },
-      { wch: 6 }, { wch: 10 }, { wch: 15 }, { wch: 50 }, { wch: 15 },
-    ]
+    ws1['!cols'] = [{ wch: 10 }, { wch: 15 }, { wch: 60 }, { wch: 35 }, { wch: 40 }, { wch: 6 }, { wch: 10 }, { wch: 15 }, { wch: 50 }, { wch: 15 }]
     XLSX.utils.book_append_sheet(wb, ws1, '발송내역')
 
-    const msData = [
-      ['거 래 명 세 표', '', '', '', '', ''],
-      ['', '', '', '', '', ''],
-      ['품목', '수량', '단가', '공급가액', '세액(10%)', '소계'],
-    ]
-
+    const msData = [['거 래 명 세 표', '', '', '', '', ''], ['', '', '', '', '', ''], ['품목', '수량', '단가', '공급가액', '세액(10%)', '소계']]
     summary.products.forEach(p => {
-      const supply = p.qty * p.price
-      const tax = Math.round(supply * 0.1)
-      const sub = supply + tax
-      msData.push([p.name, p.qty, p.price, supply, tax, sub])
+      const supply = p.qty * p.price; const tax = Math.round(supply * 0.1)
+      msData.push([p.name, p.qty, p.price, supply, tax, supply + tax])
     })
-
-    const shippingSupply = summary.shippingCount * SHIPPING_COST
+    const shippingSupply = summary.shippingCount * shippingCost
     const shippingTax = Math.round(shippingSupply * 0.1)
-    const shippingSub = shippingSupply + shippingTax
-    msData.push(['택배비', summary.shippingCount, SHIPPING_COST, shippingSupply, shippingTax, shippingSub])
-
-    let totalSub = shippingSub
-    summary.products.forEach(p => {
-      const supply = p.qty * p.price
-      const tax = Math.round(supply * 0.1)
-      totalSub += supply + tax
-    })
+    msData.push(['택배비', summary.shippingCount, shippingCost, shippingSupply, shippingTax, shippingSupply + shippingTax])
+    let totalSub = shippingSupply + shippingTax
+    summary.products.forEach(p => { const s = p.qty * p.price; totalSub += s + Math.round(s * 0.1) })
     msData.push(['총계', '', '', '', '', totalSub])
-
     const ws2 = XLSX.utils.aoa_to_sheet(msData)
     ws2['!cols'] = [{ wch: 35 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }]
     XLSX.utils.book_append_sheet(wb, ws2, '명세서')
 
     const d = new Date()
-    const yy = String(d.getFullYear()).slice(2)
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const dd = String(d.getDate()).padStart(2, '0')
+    const yy = String(d.getFullYear()).slice(2); const mm = String(d.getMonth() + 1).padStart(2, '0'); const dd = String(d.getDate()).padStart(2, '0')
     XLSX.writeFile(wb, `택배양식_와이바이_${yy}${mm}${dd}.xlsx`)
   }
 
@@ -217,13 +185,14 @@ function OrderInput() {
 
     let totalAmount = 0
     summary.products.forEach(p => { totalAmount += p.qty * p.price })
-    const shippingTotal = items.length * SHIPPING_COST
+    const shippingTotal = items.length * shippingCost
     const grandTotal = Math.round((totalAmount + shippingTotal) * 1.1)
 
     const { data: order, error } = await supabase.from('orders').insert({
       supplier_id: selectedSupplier.id, order_date: orderDate,
-      total_amount: totalAmount, shipping_total: shippingTotal, grand_total: grandTotal,
-      status: 'PENDING', created_by: user.id,
+      total_amount: totalAmount, shipping_total: shippingTotal,
+      shipping_cost_per_order: shippingCost,
+      grand_total: grandTotal, status: 'PENDING', created_by: user.id,
     }).select().single()
 
     if (error) { alert('저장 실패: ' + error.message); setSaving(false); return }
@@ -233,7 +202,6 @@ function OrderInput() {
         order_id: order.id, recipient_name: item.name, recipient_phone: item.phone,
         recipient_address: item.address, delivery_message: item.message || null,
       }).select().single()
-
       if (oi) {
         for (const p of item.products) {
           const supply = (p.qty || 1) * (p.matched?.unit_price || 0)
@@ -249,6 +217,7 @@ function OrderInput() {
     }
 
     alert('주문이 저장되었습니다.')
+    setItems([])
     setSaving(false)
   }
 
@@ -257,7 +226,7 @@ function OrderInput() {
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      {/* 매입처 선택 */}
+      {/* ❶ 매입처 선택 */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-slate-800">❶ 매입처 선택</h3>
@@ -277,11 +246,11 @@ function OrderInput() {
               <div className="w-10 h-10 rounded-xl mx-auto mb-2 flex items-center justify-center text-white font-bold text-sm"
                 style={{ backgroundColor: s.color_code }}>{s.supplier_name.slice(0, 1)}</div>
               <p className="text-sm font-medium text-slate-700">{s.supplier_name}</p>
+              <p className="text-xs text-slate-400 mt-1">택배비 {formatNumber(s.default_shipping_cost ?? 4000)}원</p>
             </button>
           ))}
         </div>
 
-        {/* 디버그 정보 */}
         {selectedSupplier && (
           <p className="mt-3 text-xs text-slate-400">📌 약어 로드: {debugInfo || '로딩 중...'}</p>
         )}
@@ -322,16 +291,36 @@ function OrderInput() {
         )}
       </div>
 
-      {/* 날짜 */}
+      {/* 날짜 + 택배비 설정 */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6">
-        <div className="flex items-center gap-4">
-          <label className="text-sm font-semibold text-slate-800">주문일자</label>
-          <input type="date" value={orderDate} onChange={e => setOrderDate(e.target.value)}
-            className="px-4 py-2 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-sm" />
+        <div className="flex flex-wrap items-center gap-6">
+          <div className="flex items-center gap-3">
+            <label className="text-sm font-semibold text-slate-800">주문일자</label>
+            <input type="date" value={orderDate} onChange={e => setOrderDate(e.target.value)}
+              className="px-4 py-2 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-sm" />
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="text-sm font-semibold text-slate-800">건당 택배비</label>
+            <div className="relative">
+              <input type="number" value={shippingCost} onChange={e => setShippingCost(Number(e.target.value) || 0)}
+                className="w-32 px-4 py-2 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-sm text-right pr-8" />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400">원</span>
+            </div>
+            <div className="flex gap-1">
+              {[3000, 3500, 4000, 4500, 5000].map(v => (
+                <button key={v} type="button" onClick={() => setShippingCost(v)}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                    shippingCost === v
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-slate-500 border-slate-300 hover:border-indigo-400'
+                  }`}>{(v/1000).toFixed(1)}k</button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* 주문 입력 */}
+      {/* ❷ 주문 입력 */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6">
         <h3 className="text-sm font-semibold text-slate-800 mb-4">❷ 주문 입력</h3>
         <div className="grid grid-cols-2 gap-4">
@@ -383,7 +372,7 @@ function OrderInput() {
                   <p className="text-xs text-amber-600 mt-1 ml-1">⚠ 매칭 안됨 - 원본 그대로 사용 (등록된 약어: {aliases.map(a=>a.alias).join(', ')})</p>
                 )}
                 {p.keyword && !p.matched && aliases.length === 0 && (
-                  <p className="text-xs text-red-500 mt-1 ml-1">❌ 약어 매핑 데이터가 없습니다. 약어 매핑 메뉴에서 등록해주세요.</p>
+                  <p className="text-xs text-red-500 mt-1 ml-1">❌ 약어 매핑 데이터가 없습니다. 약어 매핑 메뉴에서 먼저 등록해주세요.</p>
                 )}
               </div>
               <div className="w-20">
@@ -447,8 +436,7 @@ function OrderInput() {
               </thead>
               <tbody>
                 {summary.products.map((p, i) => {
-                  const supply = p.qty * p.price
-                  const tax = Math.round(supply * 0.1)
+                  const supply = p.qty * p.price; const tax = Math.round(supply * 0.1)
                   return (
                     <tr key={i} className="border-b border-slate-100">
                       <td className={`px-4 py-2 ${p.price === 0 ? 'bg-yellow-50 text-amber-700' : 'text-slate-700'}`}>{p.name}</td>
@@ -463,17 +451,17 @@ function OrderInput() {
                 <tr className="border-b border-slate-100">
                   <td className="px-4 py-2 text-slate-700">택배비</td>
                   <td className="px-4 py-2 text-center text-slate-600">{summary.shippingCount}</td>
-                  <td className="px-4 py-2 text-right text-slate-600">{formatNumber(SHIPPING_COST)}</td>
-                  <td className="px-4 py-2 text-right text-slate-700">{formatNumber(summary.shippingCount * SHIPPING_COST)}</td>
-                  <td className="px-4 py-2 text-right text-slate-500">{formatNumber(Math.round(summary.shippingCount * SHIPPING_COST * 0.1))}</td>
-                  <td className="px-4 py-2 text-right font-medium text-slate-800">{formatNumber(Math.round(summary.shippingCount * SHIPPING_COST * 1.1))}</td>
+                  <td className="px-4 py-2 text-right text-slate-600">{formatNumber(shippingCost)}</td>
+                  <td className="px-4 py-2 text-right text-slate-700">{formatNumber(summary.shippingCount * shippingCost)}</td>
+                  <td className="px-4 py-2 text-right text-slate-500">{formatNumber(Math.round(summary.shippingCount * shippingCost * 0.1))}</td>
+                  <td className="px-4 py-2 text-right font-medium text-slate-800">{formatNumber(Math.round(summary.shippingCount * shippingCost * 1.1))}</td>
                 </tr>
                 <tr className="bg-slate-50 font-bold">
                   <td className="px-4 py-3 text-slate-800">총계</td>
                   <td colSpan="4"></td>
                   <td className="px-4 py-3 text-right text-indigo-600 text-lg">
                     {formatNumber((() => {
-                      let total = Math.round(summary.shippingCount * SHIPPING_COST * 1.1)
+                      let total = Math.round(summary.shippingCount * shippingCost * 1.1)
                       summary.products.forEach(p => { total += p.qty * p.price + Math.round(p.qty * p.price * 0.1) })
                       return total
                     })())}원
