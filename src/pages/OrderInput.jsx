@@ -15,6 +15,7 @@ function OrderInput() {
   const [saving, setSaving] = useState(false)
   const [showSenderForm, setShowSenderForm] = useState(false)
   const [senderForm, setSenderForm] = useState({ sender_name: '', sender_phone: '', sender_address: '', bank_info: '', deposit_name: '' })
+  const [debugInfo, setDebugInfo] = useState('')
 
   useEffect(() => { fetchData() }, [])
   useEffect(() => { if (selectedSupplier) fetchAliases() }, [selectedSupplier])
@@ -26,8 +27,17 @@ function OrderInput() {
   }
 
   const fetchAliases = async () => {
-    const { data } = await supabase.from('product_aliases').select('*').eq('supplier_id', selectedSupplier.id)
-    setAliases(data || [])
+    // 방법1: 선택된 매입처 약어 + 매입처 미지정 약어 모두 조회
+    const { data: data1 } = await supabase.from('product_aliases').select('*').eq('supplier_id', selectedSupplier.id)
+    const { data: data2 } = await supabase.from('product_aliases').select('*').is('supplier_id', null)
+    // 방법2: 전체 약어도 백업으로 조회
+    const { data: dataAll } = await supabase.from('product_aliases').select('*')
+
+    const combined = [...(data1 || []), ...(data2 || [])]
+    // 매입처 연결된 게 하나도 없으면 전체를 사용
+    const finalAliases = combined.length > 0 ? combined : (dataAll || [])
+    setAliases(finalAliases)
+    setDebugInfo(`매입처별: ${(data1||[]).length}개, 미지정: ${(data2||[]).length}개, 전체: ${(dataAll||[]).length}개 → 사용: ${finalAliases.length}개`)
   }
 
   const selectSupplier = (s) => {
@@ -38,12 +48,17 @@ function OrderInput() {
   }
 
   const matchProduct = (keyword) => {
-    if (!keyword) return null
+    if (!keyword || aliases.length === 0) return null
     const lower = keyword.trim().toLowerCase()
-    const found = aliases.find(a => a.alias.toLowerCase() === lower)
-    if (found) return found
+    // 1. 정확히 일치
+    const exact = aliases.find(a => a.alias.toLowerCase() === lower)
+    if (exact) return exact
+    // 2. 부분 일치 (입력값이 약어를 포함하거나, 약어가 입력값을 포함)
     const partial = aliases.find(a => lower.includes(a.alias.toLowerCase()) || a.alias.toLowerCase().includes(lower))
-    return partial || null
+    if (partial) return partial
+    // 3. 정식명칭에서 검색
+    const byName = aliases.find(a => a.product_full_name.toLowerCase().includes(lower) || lower.includes(a.product_full_name.toLowerCase()))
+    return byName || null
   }
 
   const updateProductKeyword = (idx, keyword) => {
@@ -125,7 +140,6 @@ function OrderInput() {
     const summary = getSummary()
     const wb = XLSX.utils.book_new()
 
-    // 시트1: 발송내역
     const sheetData = items.map(item => ({
       '수취인명': item.name,
       '수취인 연락처': item.phone,
@@ -145,7 +159,6 @@ function OrderInput() {
     ]
     XLSX.utils.book_append_sheet(wb, ws1, '발송내역')
 
-    // 시트2: 명세서
     const msData = [
       ['거 래 명 세 표', '', '', '', '', ''],
       ['', '', '', '', '', ''],
@@ -159,13 +172,11 @@ function OrderInput() {
       msData.push([p.name, p.qty, p.price, supply, tax, sub])
     })
 
-    // 택배비
     const shippingSupply = summary.shippingCount * SHIPPING_COST
     const shippingTax = Math.round(shippingSupply * 0.1)
     const shippingSub = shippingSupply + shippingTax
     msData.push(['택배비', summary.shippingCount, SHIPPING_COST, shippingSupply, shippingTax, shippingSub])
 
-    // 총계
     let totalSub = shippingSub
     summary.products.forEach(p => {
       const supply = p.qty * p.price
@@ -178,7 +189,6 @@ function OrderInput() {
     ws2['!cols'] = [{ wch: 35 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 12 }]
     XLSX.utils.book_append_sheet(wb, ws2, '명세서')
 
-    // 파일명
     const d = new Date()
     const yy = String(d.getFullYear()).slice(2)
     const mm = String(d.getMonth() + 1).padStart(2, '0')
@@ -271,6 +281,11 @@ function OrderInput() {
           ))}
         </div>
 
+        {/* 디버그 정보 */}
+        {selectedSupplier && (
+          <p className="mt-3 text-xs text-slate-400">📌 약어 로드: {debugInfo || '로딩 중...'}</p>
+        )}
+
         {showSenderForm && (
           <div className="mt-4 p-4 bg-slate-50 rounded-xl space-y-3">
             <h4 className="text-sm font-medium text-slate-700">발송인 정보 (엑셀에 자동 입력됨)</h4>
@@ -360,12 +375,15 @@ function OrderInput() {
                     p.keyword && p.matched ? 'border-emerald-400 bg-emerald-50' :
                     p.keyword && !p.matched ? 'border-amber-400 bg-amber-50' : 'border-slate-300'
                   }`}
-                  placeholder="예: 오돌, 국물, 직화무뼈, 간장불고기" />
+                  placeholder={aliases.length > 0 ? `예: ${aliases.slice(0,3).map(a=>a.alias).join(', ')}` : '매입처를 먼저 선택하세요'} />
                 {p.matched && (
                   <p className="text-xs text-emerald-600 mt-1 ml-1">✓ {p.matched.product_full_name} ({formatNumber(p.matched.unit_price)}원)</p>
                 )}
-                {p.keyword && !p.matched && (
-                  <p className="text-xs text-amber-600 mt-1 ml-1">⚠ 매칭 안됨 - 원본 그대로 사용</p>
+                {p.keyword && !p.matched && aliases.length > 0 && (
+                  <p className="text-xs text-amber-600 mt-1 ml-1">⚠ 매칭 안됨 - 원본 그대로 사용 (등록된 약어: {aliases.map(a=>a.alias).join(', ')})</p>
+                )}
+                {p.keyword && !p.matched && aliases.length === 0 && (
+                  <p className="text-xs text-red-500 mt-1 ml-1">❌ 약어 매핑 데이터가 없습니다. 약어 매핑 메뉴에서 등록해주세요.</p>
                 )}
               </div>
               <div className="w-20">
@@ -482,19 +500,23 @@ function OrderInput() {
       )}
 
       {/* 등록된 약어 안내 */}
-      {selectedSupplier && aliases.length > 0 && (
+      {selectedSupplier && (
         <div className="bg-slate-50 rounded-2xl border border-slate-200 p-6">
           <h4 className="text-xs font-semibold text-slate-500 mb-3">💡 사용 가능한 약어 ({aliases.length}개)</h4>
-          <div className="flex flex-wrap gap-2">
-            {aliases.map(a => (
-              <span key={a.id} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-lg border border-slate-200 text-xs">
-                <span className="font-semibold text-indigo-600">{a.alias}</span>
-                <span className="text-slate-400">→</span>
-                <span className="text-slate-600">{a.product_full_name}</span>
-                <span className="text-slate-400">({formatNumber(a.unit_price)}원)</span>
-              </span>
-            ))}
-          </div>
+          {aliases.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {aliases.map(a => (
+                <span key={a.id} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-lg border border-slate-200 text-xs">
+                  <span className="font-semibold text-indigo-600">{a.alias}</span>
+                  <span className="text-slate-400">→</span>
+                  <span className="text-slate-600">{a.product_full_name}</span>
+                  <span className="text-slate-400">({formatNumber(a.unit_price)}원)</span>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-red-500">약어 매핑이 없습니다. 왼쪽 메뉴 "🔗 약어 매핑"에서 먼저 등록해주세요.</p>
+          )}
         </div>
       )}
     </div>
