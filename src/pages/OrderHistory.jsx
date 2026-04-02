@@ -15,7 +15,7 @@ function OrderHistory() {
 
   const fetchData = async () => {
     setLoading(true)
-    let query = supabase.from('orders').select('*, suppliers(supplier_name, color_code)')
+    let query = supabase.from('orders').select('*, suppliers(supplier_name, color_code, default_shipping_cost)')
       .order('order_date', { ascending: false }).limit(200)
     if (filterSupplier !== 'all') query = query.eq('supplier_id', filterSupplier)
     if (filterDate) query = query.gte('order_date', filterDate + '-01').lte('order_date', filterDate + '-31')
@@ -41,6 +41,9 @@ function OrderHistory() {
   const redownloadExcel = async (order) => {
     const { data: items } = await supabase.from('order_items').select('*, order_item_products(*)').eq('order_id', order.id)
     if (!items || items.length === 0) { alert('주문 상세가 없습니다.'); return }
+
+    // 저장된 건당 택배비 사용, 없으면 매입처 기본값, 그것도 없으면 4000
+    const unitShipping = order.shipping_cost_per_order ?? order.suppliers?.default_shipping_cost ?? 4000
 
     const { data: senderArr } = await supabase.from('sender_profiles').select('*').eq('supplier_id', order.supplier_id).limit(1)
     const sender = senderArr?.[0] || {}
@@ -70,8 +73,8 @@ function OrderHistory() {
       const supply = p.qty * p.price; const tax = Math.round(supply * 0.1)
       msData.push([p.name, p.qty, p.price, supply, tax, supply + tax])
     })
-    const ss = items.length * 4000; const st = Math.round(ss * 0.1)
-    msData.push(['택배비', items.length, 4000, ss, st, ss + st])
+    const ss = items.length * unitShipping; const st = Math.round(ss * 0.1)
+    msData.push(['택배비', items.length, unitShipping, ss, st, ss + st])
     let total = ss + st
     Object.values(productMap).forEach(p => { const s = p.qty * p.price; total += s + Math.round(s * 0.1) })
     msData.push(['총계', '', '', '', '', total])
@@ -80,9 +83,7 @@ function OrderHistory() {
     XLSX.utils.book_append_sheet(wb, ws2, '명세서')
 
     const d = new Date(order.order_date)
-    const yy = String(d.getFullYear()).slice(2)
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const dd = String(d.getDate()).padStart(2, '0')
+    const yy = String(d.getFullYear()).slice(2); const mm = String(d.getMonth() + 1).padStart(2, '0'); const dd = String(d.getDate()).padStart(2, '0')
     XLSX.writeFile(wb, `택배양식_와이바이_${yy}${mm}${dd}.xlsx`)
   }
 
@@ -110,59 +111,63 @@ function OrderHistory() {
       </div>
 
       <div className="space-y-4">
-        {orders.map(order => (
-          <div key={order.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            <div className="p-5 flex items-center justify-between cursor-pointer hover:bg-slate-50" onClick={() => loadDetails(order.id)}>
-              <div className="flex items-center gap-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-slate-800">{order.order_date}</span>
-                    {order.suppliers && (
-                      <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium text-white"
-                        style={{ backgroundColor: order.suppliers.color_code || '#6366f1' }}>
-                        {order.suppliers.supplier_name}
-                      </span>
-                    )}
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(order.status)}`}>{statusLabel(order.status)}</span>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-1">합계: {formatNumber(order.grand_total)}원 (공급가 {formatNumber(order.total_amount)} + 택배 {formatNumber(order.shipping_total)} + 세액)</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={(e) => { e.stopPropagation(); redownloadExcel(order) }}
-                  className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-lg text-xs font-medium hover:bg-emerald-200">📥 엑셀</button>
-                <button onClick={(e) => { e.stopPropagation(); handleDelete(order.id) }}
-                  className="p-1.5 hover:bg-red-50 rounded-lg text-sm">🗑️</button>
-                <span className="text-slate-400 text-sm">{expandedId === order.id ? '▲' : '▼'}</span>
-              </div>
-            </div>
-
-            {expandedId === order.id && orderDetails[order.id] && (
-              <div className="border-t border-slate-200 p-5 bg-slate-50">
-                <div className="space-y-3">
-                  {orderDetails[order.id].map((item, idx) => (
-                    <div key={item.id} className="bg-white rounded-xl p-4">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-xs font-bold">{idx + 1}</span>
-                        <span className="text-sm font-semibold text-slate-800">{item.recipient_name}</span>
-                        <span className="text-xs text-slate-400">{item.recipient_phone}</span>
-                      </div>
-                      <p className="text-xs text-slate-500">{item.recipient_address}</p>
-                      {item.delivery_message && <p className="text-xs text-slate-400 mt-1">💬 {item.delivery_message}</p>}
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {item.order_item_products?.map(p => (
-                          <span key={p.id} className="inline-flex items-center px-2.5 py-1 bg-slate-100 rounded-lg text-xs">
-                            {p.product_name} {p.quantity > 1 ? `×${p.quantity}` : ''} <span className="text-slate-400 ml-1">({formatNumber(p.unit_price)}원)</span>
-                          </span>
-                        ))}
-                      </div>
+        {orders.map(order => {
+          const unitShipping = order.shipping_cost_per_order ?? order.suppliers?.default_shipping_cost ?? 4000
+          return (
+            <div key={order.id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <div className="p-5 flex items-center justify-between cursor-pointer hover:bg-slate-50" onClick={() => loadDetails(order.id)}>
+                <div className="flex items-center gap-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-800">{order.order_date}</span>
+                      {order.suppliers && (
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium text-white"
+                          style={{ backgroundColor: order.suppliers.color_code || '#6366f1' }}>
+                          {order.suppliers.supplier_name}
+                        </span>
+                      )}
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusColor(order.status)}`}>{statusLabel(order.status)}</span>
+                      <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600">택배비 {formatNumber(unitShipping)}원/건</span>
                     </div>
-                  ))}
+                    <p className="text-xs text-slate-500 mt-1">합계: {formatNumber(order.grand_total)}원 (공급가 {formatNumber(order.total_amount)} + 택배 {formatNumber(order.shipping_total)} + 세액)</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={(e) => { e.stopPropagation(); redownloadExcel(order) }}
+                    className="px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-lg text-xs font-medium hover:bg-emerald-200">📥 엑셀</button>
+                  <button onClick={(e) => { e.stopPropagation(); handleDelete(order.id) }}
+                    className="p-1.5 hover:bg-red-50 rounded-lg text-sm">🗑️</button>
+                  <span className="text-slate-400 text-sm">{expandedId === order.id ? '▲' : '▼'}</span>
                 </div>
               </div>
-            )}
-          </div>
-        ))}
+
+              {expandedId === order.id && orderDetails[order.id] && (
+                <div className="border-t border-slate-200 p-5 bg-slate-50">
+                  <div className="space-y-3">
+                    {orderDetails[order.id].map((item, idx) => (
+                      <div key={item.id} className="bg-white rounded-xl p-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-xs font-bold">{idx + 1}</span>
+                          <span className="text-sm font-semibold text-slate-800">{item.recipient_name}</span>
+                          <span className="text-xs text-slate-400">{item.recipient_phone}</span>
+                        </div>
+                        <p className="text-xs text-slate-500">{item.recipient_address}</p>
+                        {item.delivery_message && <p className="text-xs text-slate-400 mt-1">💬 {item.delivery_message}</p>}
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {item.order_item_products?.map(p => (
+                            <span key={p.id} className="inline-flex items-center px-2.5 py-1 bg-slate-100 rounded-lg text-xs">
+                              {p.product_name} {p.quantity > 1 ? `×${p.quantity}` : ''} <span className="text-slate-400 ml-1">({formatNumber(p.unit_price)}원)</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )
+        })}
         {orders.length === 0 && (
           <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-400">주문 내역이 없습니다.</div>
         )}
