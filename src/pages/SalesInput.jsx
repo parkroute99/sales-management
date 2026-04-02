@@ -1,755 +1,832 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 
-const roundUp10 = (num) => Math.ceil(num / 10) * 10
+/* ───── 유틸 ───── */
+const fmt = (n) => (n ?? 0).toLocaleString('ko-KR')
+const roundUp10 = (v) => Math.ceil(v / 10) * 10
+const parseNum = (s) => {
+  if (!s && s !== 0) return 0
+  return Number(String(s).replace(/,/g, '')) || 0
+}
 
-function SalesInput() {
+/* ───── 빈 아이템 생성 ───── */
+const emptyItem = () => ({
+  id: Date.now() + Math.random(),
+  productId: '',
+  productName: '',
+  productSearch: '',
+  quantity: 1,
+  supplyPrice: 0,        // 개당 공급가
+  sellingPrice: 0,        // 개당 판매가
+  priceMode: 'supply',    // 'supply' | 'selling'
+  commissionType: 'rate',
+  commissionRate: 15,
+  commissionFixed: 0,
+  shippingReceived: 0,    // 배송비 수취
+  shippingCost: 3000,     // 실 배송비
+  additionalFee: 0,
+  memo: '',
+  // 제품정보 (선택 시 자동)
+  unitCost: 0,
+  purchasePrice: 0,
+  packagingCost: 0,
+  extraCost: 0,
+})
+
+export default function SalesInput() {
+  /* ── 기본 상태 ── */
   const [channels, setChannels] = useState([])
   const [suppliers, setSuppliers] = useState([])
   const [products, setProducts] = useState([])
   const [selectedChannel, setSelectedChannel] = useState(null)
-  const [selectedSupplier, setSelectedSupplier] = useState(null)
-  const [inputMode, setInputMode] = useState('manual')
+  const [selectedSupplier, setSelectedSupplier] = useState('')
+  const [items, setItems] = useState([emptyItem()])
+  const [activeIdx, setActiveIdx] = useState(0)
+  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [saveSuccess, setSaveSuccess] = useState(false)
-  const [excelData, setExcelData] = useState([])
-  const [excelFileName, setExcelFileName] = useState('')
-  const fileInputRef = useRef(null)
+  const [showExcel, setShowExcel] = useState(false)
+  const [excelData, setExcelData] = useState(null)
+  const [saleDate, setSaleDate] = useState(new Date().toISOString().slice(0, 10))
 
-  // 다중 제품 리스트
-  const [saleItems, setSaleItems] = useState([createEmptyItem()])
-  const [activeItemIdx, setActiveItemIdx] = useState(0)
+  /* ── 데이터 로드 ── */
+  useEffect(() => {
+    ;(async () => {
+      setLoading(true)
+      const [chRes, spRes, prRes] = await Promise.all([
+        supabase.from('channels').select('*').eq('is_active', true).order('name'),
+        supabase.from('suppliers').select('*').eq('is_active', true).order('name'),
+        supabase.from('products').select('*, suppliers(name)').eq('is_active', true).order('name'),
+      ])
+      setChannels(chRes.data || [])
+      setSuppliers(spRes.data || [])
+      setProducts(prRes.data || [])
+      setLoading(false)
+    })()
+  }, [])
 
-  // 공통 정보
-  const [saleDate, setSaleDate] = useState(new Date().toISOString().split('T')[0])
-  const [memo, setMemo] = useState('')
-
-  // 제품 검색
-  const [productSearch, setProductSearch] = useState('')
-  const [showProductDropdown, setShowProductDropdown] = useState(false)
-  const [searchItemIdx, setSearchItemIdx] = useState(null)
-
-  function createEmptyItem() {
-    return {
-      product: null, productSearch: '',
-      quantity: 1, priceMode: 'supply', supply_price: '', selling_price: '',
-      shipping_fee_received: '', commission_type: 'RATE', commission_rate: '',
-      commission_fixed: '', shipping_cost: '', additional_fee: '',
-    }
-  }
-
-  useEffect(() => { fetchChannels(); fetchSuppliers(); fetchProducts() }, [])
-
-  const fetchChannels = async () => {
-    const { data } = await supabase.from('channels').select('*').eq('is_active', true).order('sort_order')
-    setChannels(data || [])
-  }
-  const fetchSuppliers = async () => {
-    const { data } = await supabase.from('suppliers').select('*').eq('is_active', true).order('sort_order')
-    setSuppliers(data || [])
-  }
-  const fetchProducts = async () => {
-    const { data } = await supabase.from('products').select('*').eq('is_active', true).order('usage_count', { ascending: false })
-    setProducts(data || [])
-  }
-
-  const selectChannel = (ch) => {
+  /* ── 채널 선택 시 수수료 기본값 ── */
+  const handleChannelSelect = (ch) => {
     setSelectedChannel(ch)
-    setSaleItems(prev => prev.map(item => ({
-      ...item,
-      commission_type: ch.default_commission_type,
-      commission_rate: ch.default_commission_rate || '',
-      commission_fixed: ch.default_commission_fixed || '',
-      shipping_cost: item.shipping_cost || ch.default_shipping_cost || '',
-    })))
+    setItems((prev) =>
+      prev.map((it) => ({
+        ...it,
+        commissionType: ch.commission_type === 'fixed' ? 'fixed' : 'rate',
+        commissionRate: ch.commission_rate ?? 15,
+        commissionFixed: ch.commission_fixed ?? 0,
+        shippingReceived: ch.default_shipping_fee ?? 0,
+      }))
+    )
   }
 
-  const loadChannelProductData = async (itemIdx, product) => {
-    if (!selectedChannel || !product) return
-    const { data } = await supabase.from('channel_products').select('*')
-      .eq('channel_id', selectedChannel.id).eq('product_id', product.id)
-      .eq('is_active', true).single()
-
-    setSaleItems(prev => {
+  /* ── 제품 선택 ── */
+  const handleProductSelect = (idx, product) => {
+    setItems((prev) => {
       const next = [...prev]
-      if (data) {
-        next[itemIdx] = {
-          ...next[itemIdx],
-          selling_price: data.selling_price || '',
-          shipping_fee_received: data.shipping_fee_to_customer || '',
-          commission_type: data.commission_type || selectedChannel.default_commission_type,
-          commission_rate: data.commission_rate || selectedChannel.default_commission_rate || '',
-          commission_fixed: data.commission_fixed || selectedChannel.default_commission_fixed || '',
-          shipping_cost: data.product_shipping_cost || data.actual_shipping_cost || selectedChannel.default_shipping_cost || '',
-          additional_fee: data.additional_channel_fee || '',
-        }
-      } else if (selectedChannel) {
-        next[itemIdx] = {
-          ...next[itemIdx],
-          selling_price: '',
-          shipping_fee_received: selectedChannel.default_shipping_policy === 'PAID' ? '' : '0',
-          commission_type: selectedChannel.default_commission_type,
-          commission_rate: selectedChannel.default_commission_rate || '',
-          commission_fixed: selectedChannel.default_commission_fixed || '',
-          shipping_cost: selectedChannel.default_shipping_cost || '',
-          additional_fee: '',
-        }
+      next[idx] = {
+        ...next[idx],
+        productId: product.id,
+        productName: product.name,
+        productSearch: product.name,
+        unitCost: product.cost ?? 0,
+        purchasePrice: product.purchase_price ?? 0,
+        packagingCost: product.packaging_cost ?? 0,
+        extraCost: product.extra_cost ?? 0,
       }
       return next
     })
   }
 
-  const selectProduct = (itemIdx, p) => {
-    setSaleItems(prev => {
-      const next = [...prev]
-      next[itemIdx] = { ...next[itemIdx], product: p, productSearch: p.product_name }
-      return next
-    })
-    setShowProductDropdown(false)
-    setSearchItemIdx(null)
-    loadChannelProductData(itemIdx, p)
-  }
-
-  const updateItem = (idx, field, value) => {
-    setSaleItems(prev => {
+  /* ── 아이템 필드 업데이트 ── */
+  const updateItem = useCallback((idx, field, value) => {
+    setItems((prev) => {
       const next = [...prev]
       next[idx] = { ...next[idx], [field]: value }
+      return next
+    })
+  }, [])
 
-      // 공급가 → 판매가 자동계산
-      if (field === 'supply_price' || field === 'commission_rate' || field === 'commission_type') {
-        const item = next[idx]
-        if (item.priceMode === 'supply' && item.commission_type === 'RATE') {
-          const supply = Number(field === 'supply_price' ? value : item.supply_price) || 0
-          const rate = Number(field === 'commission_rate' ? value : item.commission_rate) || 0
-          if (supply > 0 && rate > 0 && rate < 100) {
-            next[idx].selling_price = String(roundUp10(supply / (1 - rate / 100)))
-          }
-        }
-      }
+  /* ── 공급가 → 판매가 계산 ── */
+  const calcSellingFromSupply = (supply, item) => {
+    if (item.commissionType === 'rate') {
+      const rate = item.commissionRate / 100
+      return roundUp10(supply / (1 - rate))
+    }
+    return roundUp10(supply + item.commissionFixed)
+  }
 
+  /* ── 판매가 → 공급가 역산 ── */
+  const calcSupplyFromSelling = (selling, item) => {
+    if (item.commissionType === 'rate') {
+      const rate = item.commissionRate / 100
+      return roundUp10(selling * (1 - rate))
+    }
+    return roundUp10(selling - item.commissionFixed)
+  }
+
+  /* ── 수수료 금액 ── */
+  const getCommission = (item) => {
+    if (item.commissionType === 'rate') {
+      return roundUp10(item.sellingPrice * (item.commissionRate / 100))
+    }
+    return item.commissionFixed
+  }
+
+  /* ── 마진 계산 (아이템 1건) ── */
+  const calcMargin = (item) => {
+    const qty = item.quantity
+    const revenue = item.sellingPrice * qty
+    const cost = item.unitCost * qty
+    const commission = getCommission(item) * qty
+    const supplyTotal = item.supplyPrice * qty
+    const shippingRcv = item.shippingReceived * qty
+    const shippingReal = item.shippingCost
+    const additional = item.additionalFee
+    const supplyPlusShipping = supplyTotal + shippingRcv
+    const profit = revenue - cost - commission - shippingReal - additional
+    const marginRate = revenue > 0 ? ((profit / revenue) * 100).toFixed(1) : '0.0'
+    return { revenue, cost, commission, supplyTotal, shippingRcv, shippingReal, additional, supplyPlusShipping, profit, marginRate }
+  }
+
+  /* ── 전체 합산 ── */
+  const totalMargin = () => {
+    let r = { revenue: 0, cost: 0, commission: 0, supplyTotal: 0, shippingRcv: 0, shippingReal: 0, additional: 0, supplyPlusShipping: 0, profit: 0 }
+    items.forEach((it) => {
+      const m = calcMargin(it)
+      Object.keys(r).forEach((k) => (r[k] += m[k]))
+    })
+    r.marginRate = r.revenue > 0 ? ((r.profit / r.revenue) * 100).toFixed(1) : '0.0'
+    return r
+  }
+
+  /* ── 아이템 추가/제거 ── */
+  const addItem = () => {
+    const base = emptyItem()
+    if (selectedChannel) {
+      base.commissionType = selectedChannel.commission_type === 'fixed' ? 'fixed' : 'rate'
+      base.commissionRate = selectedChannel.commission_rate ?? 15
+      base.commissionFixed = selectedChannel.commission_fixed ?? 0
+      base.shippingReceived = selectedChannel.default_shipping_fee ?? 0
+    }
+    setItems((prev) => [...prev, base])
+    setActiveIdx(items.length)
+  }
+  const removeItem = (idx) => {
+    if (items.length <= 1) return
+    setItems((prev) => prev.filter((_, i) => i !== idx))
+    setActiveIdx((prev) => Math.min(prev, items.length - 2))
+  }
+
+  /* ── 수량 ── */
+  const changeQty = (idx, delta) => {
+    setItems((prev) => {
+      const next = [...prev]
+      next[idx] = { ...next[idx], quantity: Math.max(1, next[idx].quantity + delta) }
       return next
     })
   }
 
-  const addSaleItem = () => {
-    const newItem = createEmptyItem()
-    if (selectedChannel) {
-      newItem.commission_type = selectedChannel.default_commission_type
-      newItem.commission_rate = selectedChannel.default_commission_rate || ''
-      newItem.commission_fixed = selectedChannel.default_commission_fixed || ''
-      newItem.shipping_cost = selectedChannel.default_shipping_cost || ''
-    }
-    setSaleItems(prev => [...prev, newItem])
-    setActiveItemIdx(saleItems.length)
-  }
-
-  const removeSaleItem = (idx) => {
-    if (saleItems.length <= 1) return
-    setSaleItems(prev => prev.filter((_, i) => i !== idx))
-    if (activeItemIdx >= idx && activeItemIdx > 0) setActiveItemIdx(activeItemIdx - 1)
-  }
-
-  const filteredProducts = products.filter(p =>
-    p.product_name.includes(productSearch) || (p.product_code && p.product_code.toLowerCase().includes(productSearch.toLowerCase()))
-  )
-  const frequentProducts = products.slice(0, 6)
-
-  // 개별 아이템 마진 계산
-  const calcItemMargin = (item) => {
-    const price = Number(item.selling_price) || 0
-    const qty = Number(item.quantity) || 1
-    const shippingReceived = Number(item.shipping_fee_received) || 0
-    const totalRevenue = roundUp10((price * qty) + shippingReceived)
-
-    let commission = 0
-    if (item.commission_type === 'RATE') {
-      const rate = Number(item.commission_rate) || 0
-      commission = roundUp10(price * qty * rate / 100)
-    } else {
-      commission = roundUp10(Number(item.commission_fixed) || 0)
-    }
-
-    const productCost = item.product ? roundUp10(Number(item.product.total_cost || 0) * qty) : 0
-    const shippingCost = roundUp10(Number(item.shipping_cost) || 0)
-    const additionalFee = roundUp10(Number(item.additional_fee) || 0)
-    const supplyPrice = Number(item.supply_price) || 0
-    const supplyTotal = roundUp10(supplyPrice * qty)
-    const supplyPlusShipping = supplyTotal + shippingReceived
-    const totalCost = productCost + commission + shippingCost + additionalFee
-    const netProfit = totalRevenue - totalCost
-    const marginRate = totalRevenue > 0 ? ((netProfit / totalRevenue) * 100) : 0
-    return { totalRevenue, productCost, commission, shippingCost, additionalFee, totalCost, netProfit, marginRate, supplyTotal, supplyPlusShipping, shippingReceived }
-  }
-
-  // 전체 합계
-  const calcTotalMargin = () => {
-    let totalRevenue = 0, totalProductCost = 0, totalCommission = 0, totalShippingCost = 0,
-      totalAdditionalFee = 0, totalCost = 0, totalNetProfit = 0, totalSupply = 0,
-      totalSupplyPlusShipping = 0, totalShippingReceived = 0
-    saleItems.forEach(item => {
-      const m = calcItemMargin(item)
-      totalRevenue += m.totalRevenue
-      totalProductCost += m.productCost
-      totalCommission += m.commission
-      totalShippingCost += m.shippingCost
-      totalAdditionalFee += m.additionalFee
-      totalCost += m.totalCost
-      totalNetProfit += m.netProfit
-      totalSupply += m.supplyTotal
-      totalSupplyPlusShipping += m.supplyPlusShipping
-      totalShippingReceived += m.shippingReceived
+  /* ── 가격 변경 핸들러 ── */
+  const handleSupplyChange = (idx, val) => {
+    const supply = parseNum(val)
+    setItems((prev) => {
+      const next = [...prev]
+      const item = { ...next[idx], supplyPrice: supply }
+      item.sellingPrice = calcSellingFromSupply(supply, item)
+      next[idx] = item
+      return next
     })
-    const marginRate = totalRevenue > 0 ? ((totalNetProfit / totalRevenue) * 100) : 0
-    return { totalRevenue, totalProductCost, totalCommission, totalShippingCost, totalAdditionalFee, totalCost, totalNetProfit, marginRate, totalSupply, totalSupplyPlusShipping, totalShippingReceived }
+  }
+  const handleSellingChange = (idx, val) => {
+    const selling = parseNum(val)
+    setItems((prev) => {
+      const next = [...prev]
+      const item = { ...next[idx], sellingPrice: selling }
+      item.supplyPrice = calcSupplyFromSelling(selling, item)
+      next[idx] = item
+      return next
+    })
+  }
+  const handleCommissionChange = (idx, field, val) => {
+    setItems((prev) => {
+      const next = [...prev]
+      const item = { ...next[idx], [field]: parseNum(val) }
+      // 재계산
+      if (item.priceMode === 'supply') {
+        item.sellingPrice = calcSellingFromSupply(item.supplyPrice, item)
+      } else {
+        item.supplyPrice = calcSupplyFromSelling(item.sellingPrice, item)
+      }
+      next[idx] = item
+      return next
+    })
   }
 
-  const getSupplyPrice = (item) => {
-    const price = Number(item.selling_price) || 0
-    const rate = Number(item.commission_rate) || 0
-    if (price > 0 && rate > 0 && item.commission_type === 'RATE') {
-      return roundUp10(price * (1 - rate / 100))
-    }
-    return 0
+  /* ── 필터된 제품 목록 ── */
+  const filteredProducts = (search) => {
+    if (!search) return products.slice(0, 20)
+    const s = search.toLowerCase()
+    return products.filter(
+      (p) =>
+        p.name?.toLowerCase().includes(s) ||
+        p.code?.toLowerCase().includes(s) ||
+        p.suppliers?.name?.toLowerCase().includes(s)
+    ).slice(0, 20)
   }
 
-  const formatNumber = (num) => Number(num || 0).toLocaleString()
-  const totalMargin = calcTotalMargin()
-
+  /* ── 저장 ── */
   const handleSave = async () => {
-    const validItems = saleItems.filter(item => item.product && item.selling_price)
-    if (!selectedChannel) { alert('매출처를 선택해주세요.'); return }
-    if (validItems.length === 0) { alert('제품을 최소 1개 선택하고 판매가를 입력해주세요.'); return }
-
-    // 원가 체크
-    const noCostItems = validItems.filter(item => !item.product.total_cost || Number(item.product.total_cost) === 0)
-    if (noCostItems.length > 0) {
-      const names = noCostItems.map(i => i.product.product_name).join(', ')
-      if (!window.confirm(`다음 제품의 원가가 0원입니다: ${names}\n계속 저장하시겠습니까?`)) return
-    }
+    if (!selectedChannel) return alert('매출처를 선택하세요')
+    const valid = items.every((it) => it.productId)
+    if (!valid) return alert('모든 항목에 제품을 선택하세요')
+    const zeroCost = items.some((it) => it.unitCost === 0)
+    if (zeroCost && !window.confirm('원가가 0원인 제품이 있습니다. 계속하시겠습니까?')) return
 
     setSaving(true)
-    const user = (await supabase.auth.getUser()).data.user
-    let successCount = 0
-
-    for (const item of validItems) {
-      const m = calcItemMargin(item)
-      const saleData = {
-        channel_id: selectedChannel.id, product_id: item.product.id,
-        supplier_id: selectedSupplier?.id || null,
-        sale_date: saleDate, quantity: Number(item.quantity) || 1,
-        selling_price: Number(item.selling_price),
-        shipping_fee_received: Number(item.shipping_fee_received) || 0,
-        total_revenue: m.totalRevenue, product_cost: m.productCost,
-        commission_type: item.commission_type,
-        commission_rate: item.commission_type === 'RATE' ? Number(item.commission_rate) || 0 : 0,
-        commission_fixed: item.commission_type === 'FIXED' ? Number(item.commission_fixed) || 0 : 0,
-        commission_amount: m.commission, shipping_cost: m.shippingCost,
-        additional_fee: m.additionalFee, total_cost: m.totalCost,
-        net_profit: m.netProfit, margin_rate: Number(m.marginRate.toFixed(1)),
-        memo: memo || null, input_method: 'MANUAL',
-        created_by: user.id, updated_by: user.id,
-      }
-
-      const { error } = await supabase.from('sales').insert(saleData)
-      if (!error) {
-        successCount++
-        // channel_products 업데이트
-        const { data: existing } = await supabase.from('channel_products').select('id')
-          .eq('channel_id', selectedChannel.id).eq('product_id', item.product.id).eq('is_active', true).single()
-        const cpData = {
-          channel_id: selectedChannel.id, product_id: item.product.id,
-          selling_price: Number(item.selling_price),
-          commission_type: item.commission_type,
-          commission_rate: Number(item.commission_rate) || 0,
-          commission_fixed: Number(item.commission_fixed) || 0,
-          shipping_policy: selectedChannel.default_shipping_policy,
-          shipping_fee_to_customer: Number(item.shipping_fee_received) || 0,
-          actual_shipping_cost: Number(item.shipping_cost) || 0,
-          product_shipping_cost: Number(item.shipping_cost) || 0,
-          additional_channel_fee: Number(item.additional_fee) || 0,
+    try {
+      for (const item of items) {
+        const m = calcMargin(item)
+        const record = {
+          channel_id: selectedChannel.id,
+          supplier_id: selectedSupplier || null,
+          product_id: item.productId,
+          sale_date: saleDate,
+          quantity: item.quantity,
+          supply_price: item.supplyPrice,
+          selling_price: item.sellingPrice,
+          commission_type: item.commissionType,
+          commission_rate: item.commissionRate,
+          commission_fixed: item.commissionFixed,
+          commission_amount: m.commission,
+          shipping_fee_received: item.shippingReceived,
+          shipping_cost: item.shippingCost,
+          additional_fee: item.additionalFee,
+          product_cost: m.cost,
+          total_revenue: m.revenue,
+          profit: m.profit,
+          margin_rate: parseFloat(m.marginRate),
+          memo: item.memo,
         }
-        if (existing) await supabase.from('channel_products').update(cpData).eq('id', existing.id)
-        else { cpData.created_by = user.id; cpData.effective_from = new Date().toISOString().split('T')[0]; await supabase.from('channel_products').insert(cpData) }
+        const { error } = await supabase.from('sales').insert(record)
+        if (error) throw error
+
+        // channel_products upsert
+        await supabase.from('channel_products').upsert(
+          {
+            channel_id: selectedChannel.id,
+            product_id: item.productId,
+            selling_price: item.sellingPrice,
+            supply_price: item.supplyPrice,
+          },
+          { onConflict: 'channel_id,product_id' }
+        )
       }
+      alert(`${items.length}건 매출이 등록되었습니다`)
+      setItems([emptyItem()])
+      setActiveIdx(0)
+    } catch (err) {
+      alert('저장 실패: ' + err.message)
+    } finally {
+      setSaving(false)
     }
-
-    if (successCount > 0) {
-      setSaveSuccess(true); setTimeout(() => setSaveSuccess(false), 2000)
-      alert(`${successCount}건 매출이 등록되었습니다.`)
-      setSaleItems([createEmptyItem()])
-      setActiveItemIdx(0)
-      setMemo('')
-      fetchProducts()
-    }
-    setSaving(false)
   }
 
+  /* ── 엑셀 업로드 ── */
   const handleExcelUpload = (e) => {
-    const file = e.target.files[0]; if (!file) return
-    setExcelFileName(file.name)
+    const file = e.target.files[0]
+    if (!file) return
     const reader = new FileReader()
-    reader.onload = (evt) => {
-      const wb = XLSX.read(evt.target.result, { type: 'array' })
-      const ws = wb.Sheets[wb.SheetNames[0]]
-      const data = XLSX.utils.sheet_to_json(ws)
-      setExcelData(data)
+    reader.onload = (ev) => {
+      const wb = XLSX.read(ev.target.result, { type: 'binary' })
+      const sheet = wb.Sheets[wb.SheetNames[0]]
+      const json = XLSX.utils.sheet_to_json(sheet)
+      setExcelData(json)
     }
-    reader.readAsArrayBuffer(file)
+    reader.readAsBinaryString(file)
   }
+
+  /* ── 현재 아이템 ── */
+  const cur = items[activeIdx] || items[0]
+  const curIdx = activeIdx
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+      </div>
+    )
+  }
+
+  const tm = totalMargin()
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
-      <div className="flex gap-3">
-        {[{id:'manual',label:'✏️ 수기 입력'},{id:'excel',label:'📄 엑셀 업로드'}].map(m => (
-          <button key={m.id} onClick={() => setInputMode(m.id)}
-            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-colors ${
-              inputMode === m.id ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
-            }`}>{m.label}</button>
-        ))}
+    <div className="max-w-5xl mx-auto p-4 space-y-6">
+      {/* ===== 헤더 ===== */}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-gray-800">매출 등록</h1>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowExcel(!showExcel)}
+            className="px-3 py-1.5 text-sm rounded-lg border border-gray-300 hover:bg-gray-50"
+          >
+            엑셀 업로드
+          </button>
+        </div>
       </div>
 
-      {inputMode === 'manual' ? (
-        <div className="space-y-6">
-
-          {/* ❶ 매출처 선택 */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-6">
-            <h3 className="text-sm font-semibold text-slate-800 mb-4">❶ 매출처 선택</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {channels.map(ch => (
-                <button key={ch.id} onClick={() => selectChannel(ch)}
-                  className={`p-4 rounded-xl border-2 transition-all text-center ${
-                    selectedChannel?.id === ch.id ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-slate-300 bg-white'
-                  }`}>
-                  <div className="w-10 h-10 rounded-xl mx-auto mb-2 flex items-center justify-center text-white font-bold text-sm"
-                    style={{ backgroundColor: ch.color_code }}>{ch.channel_name.slice(0, 1)}</div>
-                  <p className="text-sm font-medium text-slate-700">{ch.channel_name}</p>
-                  <p className="text-xs text-slate-400 mt-0.5">{ch.default_commission_type === 'RATE' ? `수수료 ${ch.default_commission_rate}%` : `수수료 ${formatNumber(ch.default_commission_fixed)}원`}</p>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* ❷ 매입처 선택 */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-6">
-            <h3 className="text-sm font-semibold text-slate-800 mb-1">❷ 매입처 선택 <span className="text-xs text-slate-400 font-normal">(선택사항)</span></h3>
-            <div className="flex flex-wrap gap-2 mt-3">
-              <button onClick={() => setSelectedSupplier(null)}
-                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                  !selectedSupplier ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                }`}>선택안함</button>
-              {suppliers.map(s => (
-                <button key={s.id} onClick={() => setSelectedSupplier(s)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                    selectedSupplier?.id === s.id ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}>{s.supplier_name}</button>
-              ))}
-            </div>
-          </div>
-
-          {/* 공통: 날짜 */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-6">
-            <div className="flex items-center gap-4">
-              <label className="text-sm font-semibold text-slate-800">매출일자</label>
-              <input type="date" value={saleDate} onChange={e => setSaleDate(e.target.value)}
-                className="px-4 py-2 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-sm" />
-            </div>
-          </div>
-
-          {/* ❸ 제품 목록 (다중) */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-slate-800">❸ 제품 등록 ({saleItems.length}개)</h3>
-              <button onClick={addSaleItem}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700">+ 제품 추가</button>
-            </div>
-
-            {/* 제품 탭 */}
-            <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
-              {saleItems.map((item, idx) => (
-                <button key={idx} onClick={() => setActiveItemIdx(idx)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium border whitespace-nowrap transition-colors ${
-                    activeItemIdx === idx ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
-                  }`}>
-                  <span>{item.product ? item.product.product_name : `제품 ${idx + 1}`}</span>
-                  {item.product && <span className="text-xs text-slate-400">({formatNumber(item.selling_price)}원)</span>}
-                  {saleItems.length > 1 && (
-                    <span onClick={(e) => { e.stopPropagation(); removeSaleItem(idx) }}
-                      className="ml-1 text-red-400 hover:text-red-600">✕</span>
-                  )}
-                </button>
-              ))}
-            </div>
-
-            {/* 활성 제품 상세 */}
-            {saleItems[activeItemIdx] && (() => {
-              const item = saleItems[activeItemIdx]
-              const idx = activeItemIdx
-              const itemMargin = calcItemMargin(item)
-
-              return (
-                <div className="space-y-4 border-t border-slate-100 pt-4">
-                  {/* 제품 검색 */}
-                  <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">제품 선택</label>
-                    <div className="relative">
-                      <input type="text" value={item.productSearch}
-                        onChange={e => {
-                          updateItem(idx, 'productSearch', e.target.value)
-                          setProductSearch(e.target.value)
-                          setSearchItemIdx(idx)
-                          setShowProductDropdown(true)
-                          if (item.product && e.target.value !== item.product.product_name) updateItem(idx, 'product', null)
-                        }}
-                        onFocus={() => { setSearchItemIdx(idx); setShowProductDropdown(true); setProductSearch(item.productSearch) }}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
-                        placeholder="제품명 또는 코드로 검색..." />
-                      {showProductDropdown && searchItemIdx === idx && !item.product && (
-                        <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-slate-200 rounded-xl shadow-xl z-30 max-h-80 overflow-y-auto">
-                          {productSearch === '' ? (
-                            <div className="p-3">
-                              <p className="text-xs font-semibold text-slate-400 mb-2 px-2">🔥 자주 사용</p>
-                              {frequentProducts.map(p => (
-                                <button key={p.id} onClick={() => selectProduct(idx, p)}
-                                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-indigo-50 rounded-lg text-left">
-                                  <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center text-xs font-bold text-indigo-600">{p.product_name.slice(0,1)}</div>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium text-slate-700 truncate">{p.product_name}</p>
-                                    <p className="text-xs text-slate-400">{p.product_code} · 원가 <span className="text-red-500 font-semibold">{formatNumber(p.total_cost)}원</span></p>
-                                  </div>
-                                </button>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className="p-3">
-                              {filteredProducts.length > 0 ? filteredProducts.slice(0,10).map(p => (
-                                <button key={p.id} onClick={() => selectProduct(idx, p)}
-                                  className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-indigo-50 rounded-lg text-left">
-                                  <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center text-xs font-bold text-indigo-600">{p.product_name.slice(0,1)}</div>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium text-slate-700 truncate">{p.product_name}</p>
-                                    <p className="text-xs text-slate-400">{p.product_code} · 원가 <span className="text-red-500 font-semibold">{formatNumber(p.total_cost)}원</span></p>
-                                  </div>
-                                </button>
-                              )) : <p className="text-sm text-slate-400 text-center py-4">검색 결과 없음</p>}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* 선택된 제품 - 원가 표시 */}
-                    {item.product && (
-                      <div className="mt-3 bg-indigo-50 rounded-xl p-4">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <p className="text-sm font-semibold text-indigo-700">{item.product.product_name}</p>
-                            <p className="text-xs text-indigo-500 mt-0.5">{item.product.product_code}</p>
-                          </div>
-                          <button onClick={() => { updateItem(idx, 'product', null); updateItem(idx, 'productSearch', '') }}
-                            className="text-indigo-400 hover:text-indigo-600 text-lg">✕</button>
-                        </div>
-                        <div className="mt-3 grid grid-cols-3 gap-3">
-                          <div className="bg-white rounded-lg p-3 text-center">
-                            <p className="text-xs text-slate-400">원가 (개당)</p>
-                            <p className="text-lg font-bold text-red-600">{formatNumber(item.product.total_cost)}원</p>
-                          </div>
-                          <div className="bg-white rounded-lg p-3 text-center">
-                            <p className="text-xs text-slate-400">매입가</p>
-                            <p className="text-sm font-medium text-slate-600">{formatNumber(item.product.purchase_cost)}원</p>
-                          </div>
-                          <div className="bg-white rounded-lg p-3 text-center">
-                            <p className="text-xs text-slate-400">포장+추가</p>
-                            <p className="text-sm font-medium text-slate-600">{formatNumber((Number(item.product.packaging_cost)||0)+(Number(item.product.additional_cost)||0))}원</p>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* 수량 */}
-                  <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">수량</label>
-                    <div className="flex items-center border border-slate-300 rounded-xl overflow-hidden w-48">
-                      <button type="button" onClick={() => updateItem(idx, 'quantity', Math.max(1, Number(item.quantity)-1))}
-                        className="px-4 py-3 hover:bg-slate-100 text-lg font-medium text-slate-600">−</button>
-                      <input type="number" value={item.quantity} onChange={e => updateItem(idx, 'quantity', e.target.value)}
-                        className="flex-1 text-center py-3 outline-none font-semibold" min="1" />
-                      <button type="button" onClick={() => updateItem(idx, 'quantity', Number(item.quantity)+1)}
-                        className="px-4 py-3 hover:bg-slate-100 text-lg font-medium text-slate-600">+</button>
-                    </div>
-                    {item.product && Number(item.quantity) > 1 && (
-                      <p className="text-xs text-slate-400 mt-1">원가 합계: {formatNumber(Number(item.product.total_cost) * Number(item.quantity))}원</p>
-                    )}
-                  </div>
-
-                  {/* 수수료 */}
-                  <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">수수료</label>
-                    <div className="flex gap-2">
-                      <div className="flex border border-slate-300 rounded-xl overflow-hidden">
-                        <button type="button" onClick={() => updateItem(idx, 'commission_type', 'RATE')}
-                          className={`px-3 py-3 text-sm font-medium transition-colors ${item.commission_type === 'RATE' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-500'}`}>%</button>
-                        <button type="button" onClick={() => updateItem(idx, 'commission_type', 'FIXED')}
-                          className={`px-3 py-3 text-sm font-medium transition-colors ${item.commission_type === 'FIXED' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-500'}`}>원</button>
-                      </div>
-                      {item.commission_type === 'RATE' ? (
-                        <input type="number" step="0.1" value={item.commission_rate} onChange={e => updateItem(idx, 'commission_rate', e.target.value)}
-                          className="flex-1 px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-right" placeholder="수수료율" />
-                      ) : (
-                        <input type="text" value={item.commission_fixed ? formatNumber(item.commission_fixed) : ''}
-                          onChange={e => updateItem(idx, 'commission_fixed', e.target.value.replace(/[^0-9]/g, ''))}
-                          className="flex-1 px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-right" placeholder="수수료 금액" />
-                      )}
-                    </div>
-                  </div>
-
-                  {/* 가격 입력 모드 */}
-                  {item.commission_type === 'RATE' && Number(item.commission_rate) > 0 && (
-                    <div>
-                      <label className="block text-xs font-medium text-slate-500 mb-2">가격 입력 방식</label>
-                      <div className="flex gap-2">
-                        <button type="button" onClick={() => updateItem(idx, 'priceMode', 'supply')}
-                          className={`flex-1 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
-                            item.priceMode === 'supply' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600'
-                          }`}>공급가 입력 → 판매가 자동</button>
-                        <button type="button" onClick={() => updateItem(idx, 'priceMode', 'selling')}
-                          className={`flex-1 py-2.5 rounded-xl text-sm font-medium border transition-colors ${
-                            item.priceMode === 'selling' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600'
-                          }`}>판매가 직접 입력</button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 공급가 / 판매가 */}
-                  <div className="grid grid-cols-2 gap-4">
-                    {item.priceMode === 'supply' && item.commission_type === 'RATE' && Number(item.commission_rate) > 0 ? (
-                      <>
-                        <div>
-                          <label className="block text-xs font-medium text-slate-500 mb-1">공급가 (원) <span className="text-indigo-500">← 입력</span></label>
-                          <input type="text" value={item.supply_price ? formatNumber(item.supply_price) : ''}
-                            onChange={e => updateItem(idx, 'supply_price', e.target.value.replace(/[^0-9]/g, ''))}
-                            className="w-full px-4 py-3 rounded-xl border-2 border-indigo-400 focus:border-indigo-500 outline-none text-right font-medium bg-indigo-50/30"
-                            placeholder="공급가 입력" />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-slate-500 mb-1">판매가 (원) <span className="text-emerald-500">← 자동계산</span></label>
-                          <div className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-right font-bold text-lg text-emerald-600">
-                            {item.selling_price ? formatNumber(item.selling_price) : '-'}
-                          </div>
-                          {item.supply_price && item.selling_price && (
-                            <p className="text-xs text-slate-400 mt-1 text-right">
-                              {formatNumber(item.supply_price)} ÷ {(1 - Number(item.commission_rate)/100).toFixed(2)} = {formatNumber(item.selling_price)}원
-                            </p>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div>
-                          <label className="block text-xs font-medium text-slate-500 mb-1">판매가 (원)</label>
-                          <input type="text" value={item.selling_price ? formatNumber(item.selling_price) : ''}
-                            onChange={e => updateItem(idx, 'selling_price', e.target.value.replace(/[^0-9]/g, ''))}
-                            className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-right font-medium"
-                            placeholder="판매가 입력" />
-                        </div>
-                        <div>
-                          {item.commission_type === 'RATE' && Number(item.commission_rate) > 0 && Number(item.selling_price) > 0 && (
-                            <>
-                              <label className="block text-xs font-medium text-slate-500 mb-1">공급가 (역산)</label>
-                              <div className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-right font-medium text-slate-600">
-                                {formatNumber(getSupplyPrice(item))}원
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  {/* 배송비 */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-500 mb-1">배송비 수취 (원)</label>
-                      <input type="text" value={item.shipping_fee_received ? formatNumber(item.shipping_fee_received) : ''}
-                        onChange={e => updateItem(idx, 'shipping_fee_received', e.target.value.replace(/[^0-9]/g, ''))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-right font-medium"
-                        placeholder="0 (무료배송)" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-500 mb-1">실 배송비 (원)</label>
-                      <input type="text" value={item.shipping_cost ? formatNumber(item.shipping_cost) : ''}
-                        onChange={e => updateItem(idx, 'shipping_cost', e.target.value.replace(/[^0-9]/g, ''))}
-                        className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-right font-medium"
-                        placeholder="0" />
-                    </div>
-                  </div>
-
-                  {/* 추가비용 */}
-                  <div>
-                    <label className="block text-xs font-medium text-slate-500 mb-1">추가비용 (원)</label>
-                    <input type="text" value={item.additional_fee ? formatNumber(item.additional_fee) : ''}
-                      onChange={e => updateItem(idx, 'additional_fee', e.target.value.replace(/[^0-9]/g, ''))}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 outline-none text-right font-medium"
-                      placeholder="0" />
-                  </div>
-
-                  {/* 개별 마진 미리보기 */}
-                  {item.product && item.selling_price && (
-                    <div className="bg-slate-50 rounded-xl p-4 mt-2">
-                      <p className="text-xs font-semibold text-slate-500 mb-2">📊 이 제품 마진</p>
-                      <div className="grid grid-cols-4 gap-3 text-center">
-                        <div>
-                          <p className="text-xs text-slate-400">총매출</p>
-                          <p className="text-sm font-bold text-slate-700">{formatNumber(itemMargin.totalRevenue)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-400">공급가+배송비수취</p>
-                          <p className="text-sm font-bold text-blue-600">{formatNumber(itemMargin.supplyPlusShipping)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-400">총비용</p>
-                          <p className="text-sm font-bold text-red-500">{formatNumber(itemMargin.totalCost)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-400">순이익</p>
-                          <p className={`text-sm font-bold ${itemMargin.netProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                            {formatNumber(itemMargin.netProfit)} ({itemMargin.marginRate.toFixed(1)}%)
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })()}
-          </div>
-
-          {/* 메모 */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-6">
-            <label className="block text-xs font-medium text-slate-500 mb-1">메모 (선택)</label>
-            <input type="text" value={memo} onChange={e => setMemo(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
-              placeholder="비고" />
-          </div>
-
-          {/* 전체 마진 계산 */}
-          <div className="bg-white rounded-2xl border border-slate-200 p-6">
-            <h3 className="text-sm font-semibold text-slate-800 mb-4">💰 전체 마진 계산 ({saleItems.filter(i=>i.product).length}개 제품)</h3>
-
-            {/* 제품별 요약 */}
-            {saleItems.filter(i => i.product && i.selling_price).length > 1 && (
-              <div className="mb-4 space-y-2">
-                {saleItems.filter(i => i.product && i.selling_price).map((item, i) => {
-                  const m = calcItemMargin(item)
-                  return (
-                    <div key={i} className="flex items-center justify-between py-2 px-3 bg-slate-50 rounded-lg text-sm">
-                      <span className="text-slate-700 font-medium">{item.product.product_name} ×{item.quantity}</span>
-                      <div className="flex gap-4 text-xs">
-                        <span className="text-slate-500">매출 {formatNumber(m.totalRevenue)}</span>
-                        <span className="text-blue-600 font-medium">공급가+배송 {formatNumber(m.supplyPlusShipping)}</span>
-                        <span className={m.netProfit >= 0 ? 'text-emerald-600 font-medium' : 'text-red-600 font-medium'}>이익 {formatNumber(m.netProfit)}</span>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between py-1">
-                <span className="text-slate-500">판매금액 합계</span>
-                <span className="text-slate-700">{formatNumber(totalMargin.totalRevenue - totalMargin.totalShippingReceived)}원</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-slate-500">+ 배송비 수취 합계</span>
-                <span className="text-slate-700">{formatNumber(totalMargin.totalShippingReceived)}원</span>
-              </div>
-              <div className="flex justify-between py-1 font-semibold border-t border-slate-100 pt-2">
-                <span className="text-slate-700">총매출</span>
-                <span className="text-indigo-600">{formatNumber(totalMargin.totalRevenue)}원</span>
-              </div>
-
-              <div className="flex justify-between py-2 mt-2 bg-blue-50 rounded-lg px-3">
-                <span className="text-blue-700 font-medium">공급가 합계</span>
-                <span className="text-blue-700 font-bold">{formatNumber(totalMargin.totalSupply)}원</span>
-              </div>
-              <div className="flex justify-between py-2 bg-blue-50 rounded-lg px-3">
-                <span className="text-blue-700 font-medium">공급가 + 배송비수취</span>
-                <span className="text-blue-700 font-bold">{formatNumber(totalMargin.totalSupplyPlusShipping)}원</span>
-              </div>
-
-              <div className="flex justify-between py-1 mt-2">
-                <span className="text-slate-500">- 상품원가</span>
-                <span className="text-red-500">-{formatNumber(totalMargin.totalProductCost)}원</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-slate-500">- 수수료</span>
-                <span className="text-red-500">-{formatNumber(totalMargin.totalCommission)}원</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-slate-500">- 배송비</span>
-                <span className="text-red-500">-{formatNumber(totalMargin.totalShippingCost)}원</span>
-              </div>
-              {totalMargin.totalAdditionalFee > 0 && (
-                <div className="flex justify-between py-1">
-                  <span className="text-slate-500">- 추가비용</span>
-                  <span className="text-red-500">-{formatNumber(totalMargin.totalAdditionalFee)}원</span>
-                </div>
-              )}
-
-              <div className="flex justify-between py-3 font-bold border-t-2 border-slate-200 mt-2">
-                <span className="text-slate-800">순이익</span>
-                <span className={totalMargin.totalNetProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}>
-                  {formatNumber(roundUp10(totalMargin.totalNetProfit))}원 <span className="text-xs font-medium">({totalMargin.marginRate.toFixed(1)}%)</span>
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <button onClick={handleSave} disabled={saving || !selectedChannel || saleItems.every(i => !i.product || !i.selling_price)}
-            className={`w-full py-4 rounded-2xl text-white font-semibold text-lg transition-all ${
-              saving || !selectedChannel || saleItems.every(i => !i.product || !i.selling_price) ? 'bg-slate-300 cursor-not-allowed'
-              : saveSuccess ? 'bg-emerald-500' : 'bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99]'
-            }`}>{saving ? '저장 중...' : saveSuccess ? '✓ 저장 완료!' : `매출 등록 (${saleItems.filter(i=>i.product&&i.selling_price).length}건)`}</button>
-        </div>
-      ) : (
-        <div className="bg-white rounded-2xl border border-slate-200 p-6">
-          <h3 className="text-sm font-semibold text-slate-800 mb-4">엑셀 업로드</h3>
-          <div className="mb-6">
-            <label className="block text-xs font-medium text-slate-500 mb-2">매출처 선택</label>
-            <div className="flex flex-wrap gap-2">
-              {channels.map(ch => (
-                <button key={ch.id} onClick={() => selectChannel(ch)}
-                  className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                    selectedChannel?.id === ch.id ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}>{ch.channel_name}</button>
-              ))}
-            </div>
-          </div>
-          <div onClick={() => fileInputRef.current?.click()}
-            className="border-2 border-dashed border-slate-300 rounded-xl p-12 text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors">
-            <span className="text-4xl mb-4 block">📄</span>
-            <p className="text-sm font-medium text-slate-600">클릭하여 엑셀 파일 선택</p>
-            <p className="text-xs text-slate-400 mt-1">.xlsx, .xls, .csv 지원</p>
-            {excelFileName && <p className="text-sm text-indigo-600 mt-3 font-medium">{excelFileName} ({excelData.length}행)</p>}
-          </div>
-          <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleExcelUpload} className="hidden" />
-          {excelData.length > 0 && (
-            <div className="mt-6">
-              <h4 className="text-sm font-medium text-slate-700 mb-3">미리보기 (최대 5행)</h4>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead><tr className="bg-slate-50">{Object.keys(excelData[0]).map(key => <th key={key} className="px-3 py-2 text-left font-medium text-slate-500 border-b">{key}</th>)}</tr></thead>
-                  <tbody>{excelData.slice(0, 5).map((row, i) => <tr key={i} className="border-b border-slate-100">{Object.values(row).map((val, j) => <td key={j} className="px-3 py-2 text-slate-600">{String(val)}</td>)}</tr>)}</tbody>
-                </table>
-              </div>
+      {/* ===== 엑셀 업로드 패널 ===== */}
+      {showExcel && (
+        <div className="bg-white rounded-xl border p-4 space-y-3">
+          <h3 className="font-semibold text-gray-700">엑셀 업로드</h3>
+          <input type="file" accept=".xlsx,.xls,.csv" onChange={handleExcelUpload} className="text-sm" />
+          {excelData && (
+            <div className="overflow-auto max-h-40 text-xs">
+              <table className="w-full">
+                <thead>
+                  <tr>
+                    {Object.keys(excelData[0] || {}).map((k) => (
+                      <th key={k} className="px-2 py-1 bg-gray-100 text-left">{k}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {excelData.slice(0, 5).map((row, i) => (
+                    <tr key={i}>
+                      {Object.values(row).map((v, j) => (
+                        <td key={j} className="px-2 py-1 border-t">{String(v)}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="text-gray-500 mt-1">미리보기 (최대 5행)</p>
             </div>
           )}
         </div>
       )}
+
+      {/* ===== 매출일 ===== */}
+      <div className="bg-white rounded-xl border p-4">
+        <label className="block text-sm font-medium text-gray-600 mb-1">매출일</label>
+        <input
+          type="date"
+          value={saleDate}
+          onChange={(e) => setSaleDate(e.target.value)}
+          className="border rounded-lg px-3 py-2 text-sm"
+        />
+      </div>
+
+      {/* ===== 매출처 선택 ===== */}
+      <div className="bg-white rounded-xl border p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-600">매출처 (채널) 선택</h3>
+        <div className="flex flex-wrap gap-2">
+          {channels.map((ch) => (
+            <button
+              key={ch.id}
+              onClick={() => handleChannelSelect(ch)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+                selectedChannel?.id === ch.id
+                  ? 'text-white shadow-md'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+              style={selectedChannel?.id === ch.id ? { backgroundColor: ch.color || '#3B82F6' } : {}}
+            >
+              {ch.name}
+            </button>
+          ))}
+        </div>
+        {selectedChannel && (
+          <p className="text-xs text-gray-500">
+            수수료: {selectedChannel.commission_type === 'fixed'
+              ? `${fmt(selectedChannel.commission_fixed)}원`
+              : `${selectedChannel.commission_rate}%`}
+            {' · '}기본 배송비 수취: {fmt(selectedChannel.default_shipping_fee)}원
+          </p>
+        )}
+      </div>
+
+      {/* ===== 매입처 선택 (선택사항) ===== */}
+      <div className="bg-white rounded-xl border p-4 space-y-2">
+        <h3 className="text-sm font-semibold text-gray-600">매입처 (선택)</h3>
+        <select
+          value={selectedSupplier}
+          onChange={(e) => setSelectedSupplier(e.target.value)}
+          className="border rounded-lg px-3 py-2 text-sm w-full max-w-xs"
+        >
+          <option value="">선택 안 함</option>
+          {suppliers.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* ===== 아이템 탭 ===== */}
+      <div className="bg-white rounded-xl border p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-600">제품 목록</h3>
+          <button onClick={addItem} className="px-3 py-1 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600">
+            + 제품 추가
+          </button>
+        </div>
+
+        {/* 탭 */}
+        <div className="flex flex-wrap gap-1">
+          {items.map((it, idx) => (
+            <div key={it.id} className="flex items-center">
+              <button
+                onClick={() => setActiveIdx(idx)}
+                className={`px-3 py-1 text-sm rounded-t-lg ${
+                  idx === activeIdx ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {it.productName || `제품 ${idx + 1}`}
+              </button>
+              {items.length > 1 && (
+                <button
+                  onClick={() => removeItem(idx)}
+                  className="ml-0.5 px-1.5 py-1 text-xs text-red-400 hover:text-red-600 rounded-t-lg bg-gray-50 hover:bg-red-50"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* ===== 아이템 입력 폼 ===== */}
+        <div className="border rounded-lg p-4 space-y-4 bg-gray-50">
+          {/* 제품 검색 */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">제품 검색</label>
+            <input
+              type="text"
+              placeholder="제품명 또는 코드로 검색..."
+              value={cur.productSearch}
+              onChange={(e) => updateItem(curIdx, 'productSearch', e.target.value)}
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+            />
+            {cur.productSearch && !cur.productId && (
+              <div className="mt-1 bg-white border rounded-lg max-h-40 overflow-auto">
+                {filteredProducts(cur.productSearch).map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => handleProductSelect(curIdx, p)}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 border-b last:border-0"
+                  >
+                    <span className="font-medium">{p.name}</span>
+                    {p.code && <span className="text-gray-400 ml-2">({p.code})</span>}
+                    <span className="text-gray-500 ml-2">원가 {fmt(p.cost ?? 0)}원</span>
+                    {p.suppliers?.name && <span className="text-xs text-blue-400 ml-2">{p.suppliers.name}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+            {cur.productId && (
+              <div className="mt-1 flex items-center gap-2">
+                <span className="text-sm text-green-600 font-medium">✓ {cur.productName}</span>
+                <button
+                  onClick={() => {
+                    updateItem(curIdx, 'productId', '')
+                    updateItem(curIdx, 'productName', '')
+                    updateItem(curIdx, 'productSearch', '')
+                    updateItem(curIdx, 'unitCost', 0)
+                  }}
+                  className="text-xs text-gray-400 hover:text-red-500"
+                >
+                  변경
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 원가 표시 + 수량 (가로 배치) */}
+          <div className="grid grid-cols-2 gap-4">
+            {/* 원가 */}
+            <div className="bg-white border rounded-lg p-3">
+              <p className="text-xs text-gray-500 mb-1">개당 원가</p>
+              <p className="text-lg font-bold text-gray-800">{fmt(cur.unitCost)}원</p>
+              <p className="text-xs text-gray-400 mt-1">
+                매입가 {fmt(cur.purchasePrice)} + 포장비 {fmt(cur.packagingCost)} + 기타 {fmt(cur.extraCost)}
+              </p>
+            </div>
+
+            {/* 수량 */}
+            <div className="bg-white border rounded-lg p-3">
+              <p className="text-xs text-gray-500 mb-1">수량</p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => changeQty(curIdx, -1)}
+                  className="w-9 h-9 flex items-center justify-center rounded-lg bg-gray-200 hover:bg-gray-300 text-lg font-bold"
+                >
+                  −
+                </button>
+                <input
+                  type="number"
+                  min="1"
+                  value={cur.quantity}
+                  onChange={(e) => updateItem(curIdx, 'quantity', Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-16 text-center border rounded-lg py-1 text-lg font-bold"
+                />
+                <button
+                  onClick={() => changeQty(curIdx, 1)}
+                  className="w-9 h-9 flex items-center justify-center rounded-lg bg-blue-500 hover:bg-blue-600 text-white text-lg font-bold"
+                >
+                  +
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">총 원가: {fmt(cur.unitCost * cur.quantity)}원</p>
+            </div>
+          </div>
+
+          {/* 가격 모드 토글 */}
+          <div className="flex items-center gap-2 mb-2">
+            <button
+              onClick={() => updateItem(curIdx, 'priceMode', 'supply')}
+              className={`px-3 py-1 text-xs rounded-full ${
+                cur.priceMode === 'supply' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-600'
+              }`}
+            >
+              공급가 입력 → 판매가 자동
+            </button>
+            <button
+              onClick={() => updateItem(curIdx, 'priceMode', 'selling')}
+              className={`px-3 py-1 text-xs rounded-full ${
+                cur.priceMode === 'selling' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-600'
+              }`}
+            >
+              판매가 입력 → 공급가 역산
+            </button>
+          </div>
+
+          {/* 공급가 · 판매가 · 수수료 (3열) */}
+          <div className="grid grid-cols-3 gap-3">
+            {/* 공급가 */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">
+                개당 공급가
+                {cur.priceMode === 'supply' && <span className="text-blue-500 ml-1">(입력)</span>}
+                {cur.priceMode === 'selling' && <span className="text-gray-400 ml-1">(자동)</span>}
+              </label>
+              <input
+                type="text"
+                value={fmt(cur.supplyPrice)}
+                onChange={(e) => {
+                  if (cur.priceMode === 'supply') handleSupplyChange(curIdx, e.target.value)
+                }}
+                readOnly={cur.priceMode === 'selling'}
+                className={`w-full border rounded-lg px-3 py-2 text-sm text-right font-medium ${
+                  cur.priceMode === 'supply' ? 'bg-white border-blue-300' : 'bg-gray-100 text-gray-500'
+                }`}
+              />
+            </div>
+
+            {/* 판매가 */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">
+                개당 판매가
+                {cur.priceMode === 'selling' && <span className="text-blue-500 ml-1">(입력)</span>}
+                {cur.priceMode === 'supply' && <span className="text-gray-400 ml-1">(자동)</span>}
+              </label>
+              <input
+                type="text"
+                value={fmt(cur.sellingPrice)}
+                onChange={(e) => {
+                  if (cur.priceMode === 'selling') handleSellingChange(curIdx, e.target.value)
+                }}
+                readOnly={cur.priceMode === 'supply'}
+                className={`w-full border rounded-lg px-3 py-2 text-sm text-right font-medium ${
+                  cur.priceMode === 'selling' ? 'bg-white border-blue-300' : 'bg-gray-100 text-gray-500'
+                }`}
+              />
+            </div>
+
+            {/* 수수료 */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">수수료</label>
+              <div className="flex gap-1 mb-1">
+                <button
+                  onClick={() => handleCommissionChange(curIdx, 'commissionType', cur.commissionType === 'rate' ? 'fixed' : 'rate')}
+                  className="text-xs px-2 py-0.5 rounded bg-gray-200 hover:bg-gray-300"
+                >
+                  {cur.commissionType === 'rate' ? '정률(%)' : '정액(원)'}
+                </button>
+              </div>
+              {cur.commissionType === 'rate' ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    value={cur.commissionRate}
+                    onChange={(e) => handleCommissionChange(curIdx, 'commissionRate', e.target.value)}
+                    className="w-full border rounded-lg px-3 py-2 text-sm text-right"
+                  />
+                  <span className="text-sm text-gray-500">%</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={fmt(cur.commissionFixed)}
+                    onChange={(e) => handleCommissionChange(curIdx, 'commissionFixed', e.target.value)}
+                    className="w-full border rounded-lg px-3 py-2 text-sm text-right"
+                  />
+                  <span className="text-sm text-gray-500">원</span>
+                </div>
+              )}
+              <p className="text-xs text-gray-400 mt-1">수수료: {fmt(getCommission(cur))}원/개</p>
+            </div>
+          </div>
+
+          {/* 배송비 · 추가비용 · 메모 (3열) */}
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">배송비 수취 (개당)</label>
+              <input
+                type="text"
+                value={fmt(cur.shippingReceived)}
+                onChange={(e) => updateItem(curIdx, 'shippingReceived', parseNum(e.target.value))}
+                className="w-full border rounded-lg px-3 py-2 text-sm text-right"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">실 배송비 (건당)</label>
+              <input
+                type="text"
+                value={fmt(cur.shippingCost)}
+                onChange={(e) => updateItem(curIdx, 'shippingCost', parseNum(e.target.value))}
+                className="w-full border rounded-lg px-3 py-2 text-sm text-right"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">추가비용</label>
+              <input
+                type="text"
+                value={fmt(cur.additionalFee)}
+                onChange={(e) => updateItem(curIdx, 'additionalFee', parseNum(e.target.value))}
+                className="w-full border rounded-lg px-3 py-2 text-sm text-right"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">메모</label>
+            <input
+              type="text"
+              value={cur.memo}
+              onChange={(e) => updateItem(curIdx, 'memo', e.target.value)}
+              placeholder="메모 (선택)"
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+            />
+          </div>
+
+          {/* 개별 마진 미리보기 */}
+          {cur.productId && (
+            <div className="bg-white border rounded-lg p-3 space-y-1">
+              <h4 className="text-xs font-semibold text-gray-500 mb-2">이 제품 마진 미리보기</h4>
+              {(() => {
+                const m = calcMargin(cur)
+                return (
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">총 매출</span>
+                      <span className="font-medium">{fmt(m.revenue)}원</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">총 원가</span>
+                      <span className="font-medium text-red-500">-{fmt(m.cost)}원</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">수수료</span>
+                      <span className="font-medium text-red-500">-{fmt(m.commission)}원</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">배송비</span>
+                      <span className="font-medium text-red-500">-{fmt(m.shippingReal)}원</span>
+                    </div>
+                    <div className="flex justify-between border-t pt-1 col-span-2">
+                      <span className="text-blue-600 font-semibold">공급가 합계</span>
+                      <span className="font-bold text-blue-600">{fmt(m.supplyTotal)}원</span>
+                    </div>
+                    <div className="flex justify-between col-span-2">
+                      <span className="text-blue-600 font-semibold">공급가 + 배송비수취</span>
+                      <span className="font-bold text-blue-600">{fmt(m.supplyPlusShipping)}원</span>
+                    </div>
+                    <div className="flex justify-between border-t pt-1 col-span-2">
+                      <span className={`font-bold ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        순이익
+                      </span>
+                      <span className={`font-bold ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {fmt(m.profit)}원 ({m.marginRate}%)
+                      </span>
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ===== 전체 마진 요약 ===== */}
+      {items.some((it) => it.productId) && (
+        <div className="bg-white rounded-xl border p-4 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-600">전체 마진 요약 ({items.length}건)</h3>
+
+          {/* 제품별 요약 테이블 */}
+          <div className="overflow-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-gray-500 text-xs">
+                  <th className="px-2 py-1 text-left">제품</th>
+                  <th className="px-2 py-1 text-right">수량</th>
+                  <th className="px-2 py-1 text-right">공급가</th>
+                  <th className="px-2 py-1 text-right">판매가</th>
+                  <th className="px-2 py-1 text-right">원가</th>
+                  <th className="px-2 py-1 text-right">수수료</th>
+                  <th className="px-2 py-1 text-right">이익</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((it, idx) => {
+                  if (!it.productId) return null
+                  const m = calcMargin(it)
+                  return (
+                    <tr key={it.id} className="border-t">
+                      <td className="px-2 py-1.5">{it.productName}</td>
+                      <td className="px-2 py-1.5 text-right">{it.quantity}</td>
+                      <td className="px-2 py-1.5 text-right text-blue-600">{fmt(m.supplyTotal)}</td>
+                      <td className="px-2 py-1.5 text-right">{fmt(m.revenue)}</td>
+                      <td className="px-2 py-1.5 text-right text-red-500">{fmt(m.cost)}</td>
+                      <td className="px-2 py-1.5 text-right text-red-500">{fmt(m.commission)}</td>
+                      <td className={`px-2 py-1.5 text-right font-medium ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {fmt(m.profit)}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 합산 카드 */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-blue-50 rounded-lg p-3">
+              <p className="text-xs text-blue-500">총 매출</p>
+              <p className="text-lg font-bold text-blue-700">{fmt(tm.revenue)}원</p>
+            </div>
+            <div className="bg-red-50 rounded-lg p-3">
+              <p className="text-xs text-red-500">총 원가</p>
+              <p className="text-lg font-bold text-red-700">{fmt(tm.cost)}원</p>
+            </div>
+            <div className="bg-orange-50 rounded-lg p-3">
+              <p className="text-xs text-orange-500">총 수수료</p>
+              <p className="text-lg font-bold text-orange-700">{fmt(tm.commission)}원</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-3">
+              <p className="text-xs text-gray-500">총 배송비</p>
+              <p className="text-lg font-bold text-gray-700">{fmt(tm.shippingReal)}원</p>
+            </div>
+          </div>
+
+          {/* 공급가 + 배송비수취 하이라이트 */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
+              <p className="text-xs text-indigo-500">공급가 합계</p>
+              <p className="text-xl font-bold text-indigo-700">{fmt(tm.supplyTotal)}원</p>
+            </div>
+            <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
+              <p className="text-xs text-indigo-500">공급가 + 배송비수취</p>
+              <p className="text-xl font-bold text-indigo-700">{fmt(tm.supplyPlusShipping)}원</p>
+            </div>
+          </div>
+
+          {/* 순이익 */}
+          <div className={`rounded-lg p-4 ${tm.profit >= 0 ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className={`text-xs ${tm.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>순이익</p>
+                <p className={`text-2xl font-bold ${tm.profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                  {fmt(tm.profit)}원
+                </p>
+              </div>
+              <div className={`text-3xl font-bold ${tm.profit >= 0 ? 'text-green-300' : 'text-red-300'}`}>
+                {tm.marginRate}%
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== 저장 버튼 ===== */}
+      <button
+        onClick={handleSave}
+        disabled={saving || !selectedChannel || !items.some((it) => it.productId)}
+        className={`w-full py-3 rounded-xl text-white font-bold text-lg transition ${
+          saving || !selectedChannel || !items.some((it) => it.productId)
+            ? 'bg-gray-300 cursor-not-allowed'
+            : 'bg-blue-500 hover:bg-blue-600 active:bg-blue-700'
+        }`}
+      >
+        {saving ? '저장 중...' : `매출 등록 (${items.filter((it) => it.productId).length}건)`}
+      </button>
     </div>
   )
 }
-
-export default SalesInput
