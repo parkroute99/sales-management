@@ -1,10 +1,3 @@
-이전 답변의 코드를 다시 확인해 보시면, 중간(104~108번째 줄)에 `await`를 추가한 로직이 정상적으로 반영되어 있습니다. 
-
-다만 제가 처음 원인을 설명해 드릴 때 이해를 돕기 위해 적어두었던 한글 주석(`// 1. Supabase에서...`)을 전체 코드에 병합할 때는 빼고 작성해서, 아예 적용되지 않았다고 오해하신 것 같습니다.
-
-혼동을 드려 죄송합니다. 말씀하신 주석까지 정확하게 포함한 **전체 코드**를 다시 작성해 드립니다. 파일 내용을 모두 지우고 아래 코드로 다시 덮어쓰기 하시면 됩니다.
-
-```jsx
 import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
@@ -156,19 +149,8 @@ function Channels() {
     setEditId(ch.id); setShowForm(true)
   }
 
-const handleDelete = async (id) => {
-    if (window.confirm('이 채널을 삭제하시겠습니까?')) {
-      // 삭제 요청 후 결과를 받아옵니다 (error 포함)
-      const { error } = await supabase.from('channels').delete().eq('id', id);
-      
-      if (error) {
-        // 삭제가 실패한 경우 화면에 원인을 띄워줍니다.
-        alert(`삭제 실패: ${error.message}\n\n(이미 이 매출처로 등록된 매출/정산 내역이 존재하여 데이터 무결성 보호를 위해 삭제할 수 없을 가능성이 높습니다.)`);
-      } else {
-        // 삭제가 성공한 경우에만 목록을 다시 불러옵니다.
-        await fetchChannels(); 
-      }
-    }
+  const handleDelete = async (id) => {
+    if (window.confirm('이 채널을 삭제하시겠습니까?')) { await supabase.from('channels').delete().eq('id', id); fetchChannels() }
   }
 
   const getContacts = (ch) => {
@@ -461,4 +443,3 @@ const handleDelete = async (id) => {
 }
 
 export default Channels
-```
