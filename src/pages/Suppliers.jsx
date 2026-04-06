@@ -68,6 +68,7 @@ function Suppliers() {
     XLSX.writeFile(wb, `매입처목록_${new Date().toISOString().split('T')[0]}.xlsx`)
   }
 
+  /* ── 🔥 엑셀 업로드 (버그 수정) ── */
   const handleExcelUpload = async (e) => {
     const file = e.target.files[0]; if (!file) return
     const reader = new FileReader()
@@ -75,24 +76,74 @@ function Suppliers() {
       const wb = XLSX.read(evt.target.result, { type: 'array' })
       const ws = wb.Sheets[wb.SheetNames[0]]
       const data = XLSX.utils.sheet_to_json(ws)
+
+      if (data.length === 0) { alert('엑셀에 데이터가 없습니다.'); return }
+
       const user = (await supabase.auth.getUser()).data.user
-      let count = 0
-      for (const row of data) {
-        const name = row['매입처명'] || row['supplier_name']
-        if (!name) continue
-        const existing = suppliers.find(s => s.supplier_name === name)
-        if (existing) continue
-        await supabase.from('suppliers').insert({
-          supplier_name: name, supplier_code: row['코드'] || row['supplier_code'] || '',
-          contact_name: row['담당자'] || '', contact_phone: row['연락처'] || '',
-          contact_email: row['이메일'] || '', business_number: row['사업자번호'] || '',
+
+      // ★ 최신 매입처 목록을 DB에서 직접 가져옴 (state 말고)
+      const { data: latestSuppliers } = await supabase.from('suppliers').select('*').eq('is_active', true)
+      const existingNames = new Set((latestSuppliers || []).map(s => s.supplier_name))
+      const existingCodes = new Set((latestSuppliers || []).map(s => s.supplier_code).filter(Boolean))
+      const currentCount = (latestSuppliers || []).length
+
+      let success = 0
+      let skipped = 0
+      let failed = 0
+      const errors = []
+
+      for (let i = 0; i < data.length; i++) {
+        const row = data[i]
+        const name = String(row['매입처명'] || row['supplier_name'] || '').trim()
+        if (!name) { skipped++; continue }
+
+        // 이름 중복 체크 (이미 DB에 있거나, 이번 루프에서 방금 등록한 것)
+        if (existingNames.has(name)) { skipped++; continue }
+
+        const code = String(row['코드'] || row['supplier_code'] || '').trim()
+
+        // 코드 중복 체크 (코드가 있을 때만)
+        if (code && existingCodes.has(code)) {
+          failed++
+          errors.push(`행 ${i+2}: "${name}" - 코드 "${code}" 중복`)
+          continue
+        }
+
+        const { error } = await supabase.from('suppliers').insert({
+          supplier_name: name,
+          supplier_code: code || null,
+          contact_name: String(row['담당자'] || '').trim() || null,
+          contact_phone: String(row['연락처'] || '').trim() || null,
+          contact_email: String(row['이메일'] || '').trim() || null,
+          business_number: String(row['사업자번호'] || '').trim() || null,
           default_shipping_cost: Number(row['기본택배비']) || 4000,
-          memo: row['메모'] || '', color_code: COLORS[(suppliers.length + count) % COLORS.length],
-          sort_order: suppliers.length + count, created_by: user.id,
+          memo: String(row['메모'] || '').trim() || null,
+          color_code: COLORS[(currentCount + success) % COLORS.length],
+          sort_order: currentCount + success,
+          created_by: user.id,
         })
-        count++
+
+        if (error) {
+          failed++
+          errors.push(`행 ${i+2}: "${name}" - ${error.message}`)
+        } else {
+          success++
+          existingNames.add(name)
+          if (code) existingCodes.add(code)
+        }
       }
-      alert(`${count}개 매입처가 등록되었습니다.`)
+
+      // 결과 알림
+      let msg = ''
+      if (success > 0) msg += `✅ ${success}개 매입처 등록 완료!\n`
+      if (skipped > 0) msg += `⏭️ ${skipped}개 건너뜀 (이름 없음 또는 중복)\n`
+      if (failed > 0) {
+        msg += `❌ ${failed}개 실패\n\n`
+        msg += errors.join('\n')
+      }
+      if (!msg) msg = '등록할 데이터가 없습니다.'
+
+      alert(msg)
       fetchSuppliers()
     }
     reader.readAsArrayBuffer(file)
@@ -175,8 +226,6 @@ function Suppliers() {
                   <input type="text" value={form.contact_phone} onChange={e => setForm({...form, contact_phone: e.target.value})}
                     className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" /></div>
               </div>
-
-              {/* 택배비 설정 */}
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">기본 택배비 (건당)</label>
                 <div className="relative">
@@ -195,7 +244,6 @@ function Suppliers() {
                   ))}
                 </div>
               </div>
-
               <div><label className="block text-sm font-medium text-slate-700 mb-1">메모</label>
                 <textarea value={form.memo} onChange={e => setForm({...form, memo: e.target.value})}
                   className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" rows={2} /></div>
