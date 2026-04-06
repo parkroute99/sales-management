@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 
+const DEFAULT_CATEGORIES = ['스킨케어', '밀키트', '냉동식품', '건강식품', '생활용품', '음료', '간식/과자', '양념/소스']
+
 function PurchaseInput() {
   const [suppliers, setSuppliers] = useState([])
   const [products, setProducts] = useState([])
@@ -17,6 +19,17 @@ function PurchaseInput() {
   const [excelSaving, setExcelSaving] = useState(false)
   const fileInputRef = useRef(null)
 
+  // 제품 즉석 등록 상태
+  const [showNewProduct, setShowNewProduct] = useState(false)
+  const [newProductForm, setNewProductForm] = useState({
+    product_code: '', product_name: '', category: '',
+    purchase_cost: '', packaging_cost: '', additional_cost: '',
+  })
+  const [categories, setCategories] = useState(DEFAULT_CATEGORIES)
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false)
+  const [newCategory, setNewCategory] = useState('')
+  const [newProductSaving, setNewProductSaving] = useState(false)
+
   const [form, setForm] = useState({
     purchase_date: new Date().toISOString().split('T')[0],
     quantity: 1, purchase_price: '', shipping_cost: '', additional_cost: '', memo: '',
@@ -29,9 +42,14 @@ function PurchaseInput() {
     const { data } = await supabase.from('suppliers').select('*').eq('is_active', true).order('sort_order')
     setSuppliers(data || [])
   }
+
   const fetchProducts = async () => {
-    const { data } = await supabase.from('products').select('*').eq('is_active', true).order('usage_count', { ascending: false })
+    const { data } = await supabase.from('products').select('*, suppliers(supplier_name)').eq('is_active', true).order('usage_count', { ascending: false })
     setProducts(data || [])
+    if (data) {
+      const dbCategories = [...new Set(data.map(p => p.category).filter(Boolean))]
+      setCategories([...new Set([...DEFAULT_CATEGORIES, ...dbCategories])])
+    }
   }
 
   const loadSupplierProductData = async () => {
@@ -41,8 +59,10 @@ function PurchaseInput() {
     if (data) setForm(prev => ({ ...prev, purchase_price: data.purchase_price || '', shipping_cost: data.shipping_cost_from_supplier || '', additional_cost: data.additional_cost || '' }))
   }
 
-  const selectProduct = (p) => { setSelectedProduct(p); setProductSearch(p.product_name); setShowProductDropdown(false) }
-  const filteredProducts = products.filter(p => p.product_name.includes(productSearch) || p.product_code.toLowerCase().includes(productSearch.toLowerCase()))
+  const selectProduct = (p) => { setSelectedProduct(p); setProductSearch(p.product_name); setShowProductDropdown(false); setShowNewProduct(false) }
+  const filteredProducts = products.filter(p =>
+    p.product_name.includes(productSearch) || p.product_code.toLowerCase().includes(productSearch.toLowerCase())
+  )
   const frequentProducts = products.slice(0, 4)
 
   const totalAmount = () => {
@@ -50,6 +70,81 @@ function PurchaseInput() {
   }
   const formatNumber = (num) => Number(num || 0).toLocaleString()
 
+  /* ── 제품 즉석 등록 ── */
+  const openNewProduct = () => {
+    setShowNewProduct(true)
+    setNewProductForm({
+      product_code: '', product_name: productSearch || '', category: '',
+      purchase_cost: '', packaging_cost: '', additional_cost: '',
+    })
+  }
+
+  const handleNewProductSave = async () => {
+    if (!newProductForm.product_code || !newProductForm.product_name) {
+      alert('제품코드와 제품명은 필수입니다.')
+      return
+    }
+    if (!newProductForm.purchase_cost) {
+      alert('매입원가는 필수입니다.')
+      return
+    }
+    const duplicate = products.find(p => p.product_code === newProductForm.product_code)
+    if (duplicate) {
+      alert('이미 같은 제품코드가 있습니다: ' + duplicate.product_name)
+      return
+    }
+
+    setNewProductSaving(true)
+    try {
+      const user = (await supabase.auth.getUser()).data.user
+      const { data, error } = await supabase.from('products').insert({
+        product_code: newProductForm.product_code,
+        product_name: newProductForm.product_name,
+        category: newProductForm.category || null,
+        purchase_cost: Number(newProductForm.purchase_cost) || 0,
+        packaging_cost: Number(newProductForm.packaging_cost) || 0,
+        additional_cost: Number(newProductForm.additional_cost) || 0,
+        supplier_id: selectedSupplier?.id || null,
+        created_by: user.id,
+      }).select('*, suppliers(supplier_name)').single()
+
+      if (error) throw error
+
+      // 제품 목록 갱신 & 바로 선택
+      await fetchProducts()
+      selectProduct(data)
+
+      // 매입가 자동 입력
+      setForm(prev => ({
+        ...prev,
+        purchase_price: newProductForm.purchase_cost,
+      }))
+
+      setShowNewProduct(false)
+      alert(`"${data.product_name}" 제품이 등록되고 선택되었습니다!`)
+    } catch (err) {
+      alert('제품 등록 실패: ' + err.message)
+    } finally {
+      setNewProductSaving(false)
+    }
+  }
+
+  const selectCategory = (cat) => {
+    setNewProductForm({ ...newProductForm, category: cat })
+    setShowCategoryDropdown(false)
+  }
+
+  const addCategory = () => {
+    if (!newCategory.trim()) return
+    if (!categories.includes(newCategory.trim())) {
+      setCategories([...categories, newCategory.trim()])
+    }
+    setNewProductForm({ ...newProductForm, category: newCategory.trim() })
+    setNewCategory('')
+    setShowCategoryDropdown(false)
+  }
+
+  /* ── 매입 저장 ── */
   const handleSave = async () => {
     if (!selectedSupplier || !selectedProduct) { alert('매입처와 제품을 선택해주세요.'); return }
     if (!form.purchase_price) { alert('매입가를 입력해주세요.'); return }
@@ -78,6 +173,7 @@ function PurchaseInput() {
     setSaving(false)
   }
 
+  /* ── 엑셀 ── */
   const handleExcelUpload = (e) => {
     const file = e.target.files[0]; if (!file) return
     setExcelFileName(file.name)
@@ -133,7 +229,7 @@ function PurchaseInput() {
         ))}
       </div>
 
-      {/* 매입처 선택 (공통) */}
+      {/* 매입처 선택 */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6">
         <h3 className="text-sm font-semibold text-slate-800 mb-4">❶ 매입처 선택</h3>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -153,8 +249,15 @@ function PurchaseInput() {
 
       {inputMode === 'manual' ? (
         <div className="space-y-6">
+          {/* 제품 선택 */}
           <div className="bg-white rounded-2xl border border-slate-200 p-6">
-            <h3 className="text-sm font-semibold text-slate-800 mb-4">❷ 제품 선택</h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-slate-800">❷ 제품 선택</h3>
+              <button onClick={openNewProduct}
+                className="px-3 py-1.5 bg-emerald-500 text-white rounded-lg text-xs font-medium hover:bg-emerald-600">
+                + 새 제품 등록
+              </button>
+            </div>
             <div className="relative">
               <input type="text" value={productSearch}
                 onChange={e => { setProductSearch(e.target.value); setShowProductDropdown(true); if (selectedProduct && e.target.value !== selectedProduct.product_name) setSelectedProduct(null) }}
@@ -170,7 +273,10 @@ function PurchaseInput() {
                         <button key={p.id} onClick={() => selectProduct(p)}
                           className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-indigo-50 rounded-lg text-left">
                           <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center text-xs font-bold text-indigo-600">{p.product_name.slice(0,1)}</div>
-                          <div><p className="text-sm font-medium text-slate-700">{p.product_name}</p><p className="text-xs text-slate-400">{p.product_code}</p></div>
+                          <div>
+                            <p className="text-sm font-medium text-slate-700">{p.product_name}</p>
+                            <p className="text-xs text-slate-400">{p.product_code} · 원가 {formatNumber(p.total_cost)}원</p>
+                          </div>
                         </button>
                       ))}
                     </div>
@@ -181,10 +287,21 @@ function PurchaseInput() {
                         <button key={p.id} onClick={() => selectProduct(p)}
                           className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-indigo-50 rounded-lg text-left">
                           <div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center text-xs font-bold text-indigo-600">{p.product_name.slice(0,1)}</div>
-                          <div><p className="text-sm font-medium text-slate-700">{p.product_name}</p><p className="text-xs text-slate-400">{p.product_code}</p></div>
+                          <div>
+                            <p className="text-sm font-medium text-slate-700">{p.product_name}</p>
+                            <p className="text-xs text-slate-400">{p.product_code} · 원가 {formatNumber(p.total_cost)}원</p>
+                          </div>
                         </button>
                       ))}
-                      {filteredProducts.length === 0 && <p className="text-sm text-slate-400 text-center py-4">검색 결과 없음</p>}
+                      {filteredProducts.length === 0 && (
+                        <div className="text-center py-6">
+                          <p className="text-sm text-slate-400 mb-3">검색 결과 없음</p>
+                          <button onClick={openNewProduct}
+                            className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-sm font-medium hover:bg-emerald-600">
+                            "{productSearch}" 새 제품으로 등록하기
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -192,12 +309,121 @@ function PurchaseInput() {
             </div>
             {selectedProduct && (
               <div className="mt-3 bg-indigo-50 rounded-xl p-4 flex items-center justify-between">
-                <div><p className="text-sm font-semibold text-indigo-700">{selectedProduct.product_name}</p><p className="text-xs text-indigo-500">{selectedProduct.product_code}</p></div>
+                <div>
+                  <p className="text-sm font-semibold text-indigo-700">{selectedProduct.product_name}</p>
+                  <p className="text-xs text-indigo-500">{selectedProduct.product_code} · 원가 {formatNumber(selectedProduct.total_cost)}원</p>
+                </div>
                 <button onClick={() => { setSelectedProduct(null); setProductSearch('') }} className="text-indigo-400 hover:text-indigo-600 text-lg">✕</button>
               </div>
             )}
           </div>
 
+          {/* 새 제품 등록 폼 (인라인) */}
+          {showNewProduct && (
+            <div className="bg-emerald-50 rounded-2xl border-2 border-emerald-300 p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-emerald-800">🆕 새 제품 등록</h3>
+                <button onClick={() => setShowNewProduct(false)} className="text-emerald-400 hover:text-emerald-600 text-sm">✕ 닫기</button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">제품코드 *</label>
+                  <input type="text" value={newProductForm.product_code}
+                    onChange={e => setNewProductForm({...newProductForm, product_code: e.target.value.toUpperCase()})}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none text-sm"
+                    placeholder="예: DOL004" />
+                </div>
+                <div className="relative">
+                  <label className="block text-xs font-medium text-slate-600 mb-1">카테고리</label>
+                  <div onClick={() => setShowCategoryDropdown(!showCategoryDropdown)}
+                    className={`w-full px-4 py-3 rounded-xl border cursor-pointer flex items-center justify-between text-sm ${
+                      showCategoryDropdown ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-slate-300'
+                    }`}>
+                    <span className={newProductForm.category ? 'text-slate-800' : 'text-slate-400'}>
+                      {newProductForm.category || '선택'}
+                    </span>
+                    <span className="text-slate-400 text-xs">{showCategoryDropdown ? '▲' : '▼'}</span>
+                  </div>
+                  {showCategoryDropdown && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-50 max-h-48 overflow-y-auto">
+                      <div className="p-2">
+                        <button type="button" onClick={() => { setNewProductForm({...newProductForm, category: ''}); setShowCategoryDropdown(false) }}
+                          className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-slate-50 text-slate-400">선택 안함</button>
+                        {categories.map(c => (
+                          <button key={c} type="button" onClick={() => selectCategory(c)}
+                            className={`w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-slate-50 ${
+                              newProductForm.category === c ? 'bg-emerald-50 text-emerald-700 font-medium' : 'text-slate-600'
+                            }`}>{c}</button>
+                        ))}
+                      </div>
+                      <div className="border-t p-2 flex gap-2">
+                        <input type="text" value={newCategory} onChange={e => setNewCategory(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCategory() } }}
+                          className="flex-1 px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none" placeholder="새 카테고리" />
+                        <button type="button" onClick={addCategory}
+                          className="px-3 py-2 bg-emerald-500 text-white rounded-lg text-sm">추가</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">제품명 *</label>
+                <input type="text" value={newProductForm.product_name}
+                  onChange={e => setNewProductForm({...newProductForm, product_name: e.target.value})}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none text-sm"
+                  placeholder="예: 직화 고추장 불고기 180g" />
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">매입원가 * (원)</label>
+                  <input type="number" value={newProductForm.purchase_cost}
+                    onChange={e => setNewProductForm({...newProductForm, purchase_cost: e.target.value})}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none text-sm text-right"
+                    placeholder="0" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">포장비 (원)</label>
+                  <input type="number" value={newProductForm.packaging_cost}
+                    onChange={e => setNewProductForm({...newProductForm, packaging_cost: e.target.value})}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none text-sm text-right"
+                    placeholder="0" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">부대비용 (원)</label>
+                  <input type="number" value={newProductForm.additional_cost}
+                    onChange={e => setNewProductForm({...newProductForm, additional_cost: e.target.value})}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 outline-none text-sm text-right"
+                    placeholder="0" />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl p-3 flex items-center justify-between">
+                <span className="text-sm text-slate-500">총 원가</span>
+                <span className="text-lg font-bold text-emerald-600">
+                  {formatNumber((Number(newProductForm.purchase_cost)||0) + (Number(newProductForm.packaging_cost)||0) + (Number(newProductForm.additional_cost)||0))}원
+                </span>
+              </div>
+
+              {selectedSupplier && (
+                <p className="text-xs text-slate-500">
+                  매입처 <span className="font-medium text-indigo-600">{selectedSupplier.supplier_name}</span>에 자동 연결됩니다
+                </p>
+              )}
+
+              <button onClick={handleNewProductSave} disabled={newProductSaving}
+                className={`w-full py-3 rounded-xl text-white font-semibold transition-all ${
+                  newProductSaving ? 'bg-slate-300 cursor-not-allowed' : 'bg-emerald-500 hover:bg-emerald-600'
+                }`}>
+                {newProductSaving ? '등록 중...' : '제품 등록 후 바로 선택'}
+              </button>
+            </div>
+          )}
+
+          {/* 매입 상세 */}
           <div className="bg-white rounded-2xl border border-slate-200 p-6">
             <h3 className="text-sm font-semibold text-slate-800 mb-4">❸ 매입 상세</h3>
             <div className="grid grid-cols-2 gap-4">
@@ -231,6 +457,7 @@ function PurchaseInput() {
                 className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="예: 긴급발주" /></div>
           </div>
 
+          {/* 매입 요약 */}
           <div className="bg-white rounded-2xl border border-slate-200 p-6">
             <h3 className="text-sm font-semibold text-slate-800 mb-4">매입 요약</h3>
             <div className="space-y-2 text-sm">
