@@ -156,12 +156,18 @@ function Channels() {
     setEditId(ch.id); setShowForm(true)
   }
 
-  const handleDelete = async (id) => {
+const handleDelete = async (id) => {
     if (window.confirm('이 채널을 삭제하시겠습니까?')) {
-      // 1. Supabase에서 삭제될 때까지 기다립니다.
-      await supabase.from('channels').delete().eq('id', id);
-      // 2. 삭제가 완료된 후 목록을 다시 불러옵니다.
-      await fetchChannels();
+      // 삭제 요청 후 결과를 받아옵니다 (error 포함)
+      const { error } = await supabase.from('channels').delete().eq('id', id);
+      
+      if (error) {
+        // 삭제가 실패한 경우 화면에 원인을 띄워줍니다.
+        alert(`삭제 실패: ${error.message}\n\n(이미 이 매출처로 등록된 매출/정산 내역이 존재하여 데이터 무결성 보호를 위해 삭제할 수 없을 가능성이 높습니다.)`);
+      } else {
+        // 삭제가 성공한 경우에만 목록을 다시 불러옵니다.
+        await fetchChannels(); 
+      }
     }
   }
 
