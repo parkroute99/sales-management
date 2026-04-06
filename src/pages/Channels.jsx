@@ -1,3 +1,8 @@
+알겠습니다. 수정한 부분을 포함하여 `Channels.jsx`의 전체 코드를 다시 작성해 드립니다. 
+
+기존 `Channels.jsx` 파일의 내용을 모두 지우고, 아래 코드를 전체 복사하여 그대로 붙여넣기 하십시오.
+
+```jsx
 import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
@@ -150,7 +155,10 @@ function Channels() {
   }
 
   const handleDelete = async (id) => {
-    if (window.confirm('이 채널을 삭제하시겠습니까?')) { await supabase.from('channels').delete().eq('id', id); fetchChannels() }
+    if (window.confirm('이 채널을 삭제하시겠습니까?')) { 
+      await supabase.from('channels').delete().eq('id', id); 
+      await fetchChannels(); 
+    }
   }
 
   const getContacts = (ch) => {
@@ -443,3 +451,4 @@ function Channels() {
 }
 
 export default Channels
+```
