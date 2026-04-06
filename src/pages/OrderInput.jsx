@@ -2,12 +2,21 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 
-// 기본 발송인 (DB에 아무것도 없을 때 폴백)
 const DEFAULT_SENDER = {
   sender_name: '와이바이',
   sender_phone: '010-3933-6301',
   sender_address: '경기도 안양시 동안구 시민대로 361, 에이스평촌타워 103호'
 }
+
+/* ── 초성 유틸 ── */
+const CHO = ['ㄱ','ㄲ','ㄴ','ㄷ','ㄸ','ㄹ','ㅁ','ㅂ','ㅃ','ㅅ','ㅆ','ㅇ','ㅈ','ㅉ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ']
+const getChosung = (str) => [...(str||'')].map(c => {
+  const code = c.charCodeAt(0) - 0xAC00
+  if (code < 0 || code > 11171) return c
+  return CHO[Math.floor(code / 588)]
+}).join('')
+
+const isChosung = (str) => [...str].every(c => CHO.includes(c))
 
 function OrderInput() {
   const [suppliers, setSuppliers] = useState([])
@@ -16,11 +25,13 @@ function OrderInput() {
   const [shippingCost, setShippingCost] = useState(4000)
   const [orderDate, setOrderDate] = useState(new Date().toISOString().split('T')[0])
   const [items, setItems] = useState([])
-  const [currentItem, setCurrentItem] = useState({ name: '', phone: '', address: '', message: '', products: [{ keyword: '', matched: null, qty: 1 }] })
+  const [currentItem, setCurrentItem] = useState({
+    name: '', phone: '', address: '', message: '',
+    products: [{ keyword: '', matched: null, qty: 1, candidates: [], showCandidates: false }]
+  })
   const [saving, setSaving] = useState(false)
   const [debugInfo, setDebugInfo] = useState('')
 
-  // 발송인 프로필 관리
   const [senderProfiles, setSenderProfiles] = useState([])
   const [selectedSenderId, setSelectedSenderId] = useState(null)
   const [activeSender, setActiveSender] = useState({ ...DEFAULT_SENDER })
@@ -41,8 +52,6 @@ function OrderInput() {
     const { data: spData } = await supabase.from('sender_profiles').select('*').order('is_default', { ascending: false }).order('created_at')
     const profiles = spData || []
     setSenderProfiles(profiles)
-
-    // 기본 발송인 자동 선택
     const defaultProfile = profiles.find(p => p.is_default)
     if (defaultProfile) {
       setSelectedSenderId(defaultProfile.id)
@@ -76,60 +85,112 @@ function OrderInput() {
     setShippingCost(s.default_shipping_cost ?? 4000)
   }
 
-  // 발송인 프로필 CRUD
-  const resetSenderForm = () => {
-    setSenderForm({ profile_name: '', sender_name: '', sender_phone: '', sender_address: '' })
-    setSenderEditId(null)
-  }
-
+  /* ── 발송인 관리 ── */
+  const resetSenderForm = () => { setSenderForm({ profile_name: '', sender_name: '', sender_phone: '', sender_address: '' }); setSenderEditId(null) }
   const handleSaveSender = async () => {
     if (!senderForm.sender_name || !senderForm.sender_phone) { alert('발송인명과 연락처를 입력해주세요.'); return }
     const profileName = senderForm.profile_name || senderForm.sender_name
     const data = { ...senderForm, profile_name: profileName }
-
-    if (senderEditId) {
-      await supabase.from('sender_profiles').update(data).eq('id', senderEditId)
-    } else {
-      const isFirst = senderProfiles.length === 0
-      await supabase.from('sender_profiles').insert({ ...data, is_default: isFirst })
-    }
-    resetSenderForm()
-    await fetchSenderProfiles()
+    if (senderEditId) await supabase.from('sender_profiles').update(data).eq('id', senderEditId)
+    else { const isFirst = senderProfiles.length === 0; await supabase.from('sender_profiles').insert({ ...data, is_default: isFirst }) }
+    resetSenderForm(); await fetchSenderProfiles()
   }
+  const handleEditSender = (p) => { setSenderEditId(p.id); setSenderForm({ profile_name: p.profile_name || '', sender_name: p.sender_name, sender_phone: p.sender_phone, sender_address: p.sender_address }) }
+  const handleDeleteSender = async (id) => { if (!window.confirm('삭제?')) return; await supabase.from('sender_profiles').delete().eq('id', id); await fetchSenderProfiles() }
+  const handleSetDefault = async (id) => { await supabase.from('sender_profiles').update({ is_default: false }).neq('id', id); await supabase.from('sender_profiles').update({ is_default: true }).eq('id', id); await fetchSenderProfiles() }
 
-  const handleEditSender = (p) => {
-    setSenderEditId(p.id)
-    setSenderForm({ profile_name: p.profile_name || '', sender_name: p.sender_name, sender_phone: p.sender_phone, sender_address: p.sender_address })
-  }
-
-  const handleDeleteSender = async (id) => {
-    if (!window.confirm('이 발송인 정보를 삭제하시겠습니까?')) return
-    await supabase.from('sender_profiles').delete().eq('id', id)
-    await fetchSenderProfiles()
-  }
-
-  const handleSetDefault = async (id) => {
-    await supabase.from('sender_profiles').update({ is_default: false }).neq('id', id)
-    await supabase.from('sender_profiles').update({ is_default: true }).eq('id', id)
-    await fetchSenderProfiles()
-  }
-
+  /* ── 🔥 스마트 매칭 (초성+부분+퍼지) ── */
   const matchProduct = (keyword) => {
-    if (!keyword || aliases.length === 0) return null
+    if (!keyword || aliases.length === 0) return { best: null, candidates: [] }
     const lower = keyword.trim().toLowerCase()
-    const exact = aliases.find(a => a.alias.toLowerCase() === lower)
-    if (exact) return exact
-    const partial = aliases.find(a => lower.includes(a.alias.toLowerCase()) || a.alias.toLowerCase().includes(lower))
-    if (partial) return partial
-    const byName = aliases.find(a => a.product_full_name.toLowerCase().includes(lower) || lower.includes(a.product_full_name.toLowerCase()))
-    return byName || null
+    const choInput = getChosung(keyword.trim())
+    const results = []
+
+    for (const a of aliases) {
+      let score = 0
+      const aliasLower = a.alias.toLowerCase()
+      const nameLower = a.product_full_name.toLowerCase()
+
+      // 1) 완전 일치 (최고 점수)
+      if (aliasLower === lower) { score = 100 }
+      // 2) 약어가 키워드에 포함, 또는 키워드가 약어에 포함
+      else if (aliasLower.includes(lower)) { score = 80 }
+      else if (lower.includes(aliasLower)) { score = 75 }
+      // 3) 정식명에 포함
+      else if (nameLower.includes(lower)) { score = 70 }
+      // 4) 초성 매칭
+      else if (isChosung(keyword.trim())) {
+        const aliasChosung = getChosung(a.alias)
+        const nameChosung = getChosung(a.product_full_name.replace(/\s/g, ''))
+        if (aliasChosung.startsWith(keyword.trim())) { score = 65 }
+        else if (nameChosung.startsWith(keyword.trim())) { score = 60 }
+        else if (nameChosung.includes(keyword.trim())) { score = 55 }
+      }
+      // 5) 초성 비교 (일반 입력)
+      else {
+        const nameChosung = getChosung(a.product_full_name.replace(/\s/g, ''))
+        if (nameChosung.includes(choInput)) { score = 40 }
+      }
+
+      if (score > 0) {
+        // 매칭 횟수가 높으면 보너스
+        score += Math.min(10, (a.match_count || 0) * 0.5)
+        results.push({ alias: a, score })
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score)
+    const best = results.length > 0 && results[0].score >= 55 ? results[0].alias : null
+    const candidates = results.slice(0, 5).map(r => r.alias)
+    return { best, candidates }
   }
 
+  /* ── 제품 키워드 업데이트 ── */
   const updateProductKeyword = (idx, keyword) => {
     const newProducts = [...currentItem.products]
-    newProducts[idx].keyword = keyword
-    newProducts[idx].matched = matchProduct(keyword)
+    const { best, candidates } = matchProduct(keyword)
+    newProducts[idx] = {
+      ...newProducts[idx],
+      keyword,
+      matched: best,
+      candidates,
+      showCandidates: !best && keyword.length >= 1 && candidates.length > 0,
+    }
     setCurrentItem({ ...currentItem, products: newProducts })
+  }
+
+  /* ── 후보 선택 (= 자동 학습) ── */
+  const selectCandidate = async (prodIdx, alias) => {
+    const newProducts = [...currentItem.products]
+    newProducts[prodIdx] = {
+      ...newProducts[prodIdx],
+      matched: alias,
+      showCandidates: false,
+    }
+    setCurrentItem({ ...currentItem, products: newProducts })
+
+    // 자동 학습: 입력한 키워드를 새 약어로 등록
+    const keyword = newProducts[prodIdx].keyword.trim()
+    if (keyword && keyword.toLowerCase() !== alias.alias.toLowerCase()) {
+      const { data: exists } = await supabase.from('product_aliases').select('id').eq('alias', keyword).maybeSingle()
+      if (!exists) {
+        await supabase.from('product_aliases').insert({
+          alias: keyword,
+          product_full_name: alias.product_full_name,
+          unit_price: alias.unit_price,
+          supplier_id: alias.supplier_id || null,
+          product_id: alias.product_id || null,
+          is_auto: true,
+        })
+        // 로컬 aliases에도 추가
+        setAliases(prev => [...prev, { alias: keyword, product_full_name: alias.product_full_name, unit_price: alias.unit_price, supplier_id: alias.supplier_id, product_id: alias.product_id, is_auto: true }])
+      }
+    }
+
+    // 매칭 횟수 증가
+    if (alias.id) {
+      await supabase.from('product_aliases').update({ match_count: (alias.match_count || 0) + 1 }).eq('id', alias.id)
+    }
   }
 
   const updateProductQty = (idx, qty) => {
@@ -139,7 +200,7 @@ function OrderInput() {
   }
 
   const addProductRow = () => {
-    setCurrentItem({ ...currentItem, products: [...currentItem.products, { keyword: '', matched: null, qty: 1 }] })
+    setCurrentItem({ ...currentItem, products: [...currentItem.products, { keyword: '', matched: null, qty: 1, candidates: [], showCandidates: false }] })
   }
 
   const removeProductRow = (idx) => {
@@ -159,7 +220,7 @@ function OrderInput() {
     if (currentItem.products.every(p => !p.keyword)) { alert('제품을 최소 1개 입력해주세요.'); return }
     const newItem = { ...currentItem, phone: formatPhone(currentItem.phone), products: currentItem.products.filter(p => p.keyword) }
     setItems([...items, newItem])
-    setCurrentItem({ name: '', phone: '', address: '', message: '', products: [{ keyword: '', matched: null, qty: 1 }] })
+    setCurrentItem({ name: '', phone: '', address: '', message: '', products: [{ keyword: '', matched: null, qty: 1, candidates: [], showCandidates: false }] })
   }
 
   const removeItem = (idx) => { setItems(items.filter((_, i) => i !== idx)) }
@@ -190,7 +251,6 @@ function OrderInput() {
     if (items.length === 0) { alert('주문 내역이 없습니다.'); return }
     const summary = getSummary()
     const wb = XLSX.utils.book_new()
-
     const sheetData = items.map(item => ({
       '수취인명': item.name, '수취인 연락처': item.phone,
       '배송지': item.address, '배송메세지': item.message || '',
@@ -227,7 +287,6 @@ function OrderInput() {
     setSaving(true)
     const user = (await supabase.auth.getUser()).data.user
     const summary = getSummary()
-
     let totalAmount = 0
     summary.products.forEach(p => { totalAmount += p.qty * p.price })
     const shippingTotal = items.length * shippingCost
@@ -236,8 +295,7 @@ function OrderInput() {
     const { data: order, error } = await supabase.from('orders').insert({
       supplier_id: selectedSupplier.id, order_date: orderDate,
       total_amount: totalAmount, shipping_total: shippingTotal,
-      shipping_cost_per_order: shippingCost,
-      grand_total: grandTotal, status: 'PENDING', created_by: user.id,
+      shipping_cost_per_order: shippingCost, grand_total: grandTotal, status: 'PENDING', created_by: user.id,
     }).select().single()
 
     if (error) { alert('저장 실패: ' + error.message); setSaving(false); return }
@@ -301,17 +359,13 @@ function OrderInput() {
             {showSenderManager ? '닫기' : '⚙️ 발송인 관리'}
           </button>
         </div>
-
-        {/* 발송인 프로필 목록 (선택) */}
         <div className="flex flex-wrap gap-3">
           {senderProfiles.map(p => (
             <button key={p.id} onClick={() => selectSenderProfile(p)}
               className={`relative px-4 py-3 rounded-xl border-2 transition-all text-left min-w-[200px] ${
                 selectedSenderId === p.id ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-slate-300 bg-white'
               }`}>
-              {p.is_default && (
-                <span className="absolute -top-2 -right-2 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">기본</span>
-              )}
+              {p.is_default && <span className="absolute -top-2 -right-2 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">기본</span>}
               <p className="text-sm font-semibold text-slate-800">{p.profile_name || p.sender_name}</p>
               <p className="text-xs text-slate-500 mt-0.5">{p.sender_name} · {p.sender_phone}</p>
               <p className="text-xs text-slate-400 mt-0.5 truncate max-w-[250px]">{p.sender_address}</p>
@@ -323,8 +377,6 @@ function OrderInput() {
             </div>
           )}
         </div>
-
-        {/* 현재 선택된 발송인 표시 */}
         <div className="mt-4 p-3 bg-slate-50 rounded-xl flex items-center gap-4 text-sm">
           <span className="text-slate-500">현재 발송인:</span>
           <span className="font-semibold text-slate-800">{activeSender.sender_name}</span>
@@ -332,48 +384,28 @@ function OrderInput() {
           <span className="text-slate-400 truncate flex-1">{activeSender.sender_address}</span>
         </div>
 
-        {/* 발송인 관리 패널 */}
         {showSenderManager && (
           <div className="mt-4 p-5 bg-slate-50 rounded-xl space-y-4 border border-slate-200">
             <h4 className="text-sm font-semibold text-slate-700">{senderEditId ? '발송인 수정' : '새 발송인 등록'}</h4>
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">프로필명 (구분용)</label>
+              <div><label className="block text-xs text-slate-500 mb-1">프로필명</label>
                 <input type="text" value={senderForm.profile_name} onChange={e => setSenderForm({...senderForm, profile_name: e.target.value})}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none focus:border-indigo-500"
-                  placeholder="예: 와이바이 본점, 개인 등" />
-              </div>
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">발송인명 *</label>
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none focus:border-indigo-500" placeholder="예: 와이바이 본점" /></div>
+              <div><label className="block text-xs text-slate-500 mb-1">발송인명 *</label>
                 <input type="text" value={senderForm.sender_name} onChange={e => setSenderForm({...senderForm, sender_name: e.target.value})}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none focus:border-indigo-500"
-                  placeholder="와이바이" />
-              </div>
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none focus:border-indigo-500" placeholder="와이바이" /></div>
             </div>
-            <div>
-              <label className="block text-xs text-slate-500 mb-1">연락처 *</label>
+            <div><label className="block text-xs text-slate-500 mb-1">연락처 *</label>
               <input type="text" value={senderForm.sender_phone} onChange={e => setSenderForm({...senderForm, sender_phone: e.target.value})}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none focus:border-indigo-500"
-                placeholder="010-0000-0000" />
-            </div>
-            <div>
-              <label className="block text-xs text-slate-500 mb-1">주소 *</label>
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none focus:border-indigo-500" placeholder="010-0000-0000" /></div>
+            <div><label className="block text-xs text-slate-500 mb-1">주소 *</label>
               <input type="text" value={senderForm.sender_address} onChange={e => setSenderForm({...senderForm, sender_address: e.target.value})}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none focus:border-indigo-500"
-                placeholder="경기도 안양시..." />
-            </div>
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm outline-none focus:border-indigo-500" placeholder="경기도 안양시..." /></div>
             <div className="flex gap-2">
-              <button onClick={handleSaveSender}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">
-                {senderEditId ? '수정 완료' : '등록'}
-              </button>
-              {senderEditId && (
-                <button onClick={resetSenderForm}
-                  className="px-4 py-2 bg-slate-200 text-slate-600 rounded-lg text-sm font-medium">취소</button>
-              )}
+              <button onClick={handleSaveSender} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700">
+                {senderEditId ? '수정 완료' : '등록'}</button>
+              {senderEditId && <button onClick={resetSenderForm} className="px-4 py-2 bg-slate-200 text-slate-600 rounded-lg text-sm font-medium">취소</button>}
             </div>
-
-            {/* 기존 프로필 리스트 (관리용) */}
             {senderProfiles.length > 0 && (
               <div className="mt-4 border-t border-slate-200 pt-4">
                 <p className="text-xs font-semibold text-slate-500 mb-3">등록된 발송인 ({senderProfiles.length}개)</p>
@@ -388,14 +420,9 @@ function OrderInput() {
                         <p className="text-xs text-slate-500">{p.sender_name} · {p.sender_phone} · {p.sender_address}</p>
                       </div>
                       <div className="flex gap-1 ml-3">
-                        {!p.is_default && (
-                          <button onClick={() => handleSetDefault(p.id)}
-                            className="px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50 rounded font-medium">기본설정</button>
-                        )}
-                        <button onClick={() => handleEditSender(p)}
-                          className="p-1.5 hover:bg-slate-100 rounded text-sm">✏️</button>
-                        <button onClick={() => handleDeleteSender(p.id)}
-                          className="p-1.5 hover:bg-red-50 rounded text-sm">🗑️</button>
+                        {!p.is_default && <button onClick={() => handleSetDefault(p.id)} className="px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50 rounded font-medium">기본설정</button>}
+                        <button onClick={() => handleEditSender(p)} className="p-1.5 hover:bg-slate-100 rounded text-sm">✏️</button>
+                        <button onClick={() => handleDeleteSender(p.id)} className="p-1.5 hover:bg-red-50 rounded text-sm">🗑️</button>
                       </div>
                     </div>
                   ))}
@@ -406,7 +433,7 @@ function OrderInput() {
         )}
       </div>
 
-      {/* 날짜 + 택배비 설정 */}
+      {/* 날짜 + 택배비 */}
       <div className="bg-white rounded-2xl border border-slate-200 p-6">
         <div className="flex flex-wrap items-center gap-6">
           <div className="flex items-center gap-3">
@@ -437,71 +464,81 @@ function OrderInput() {
       <div className="bg-white rounded-2xl border border-slate-200 p-6">
         <h3 className="text-sm font-semibold text-slate-800 mb-4">❷ 주문 입력</h3>
         <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">수취인명 *</label>
+          <div><label className="block text-xs font-medium text-slate-500 mb-1">수취인명 *</label>
             <input type="text" value={currentItem.name} onChange={e => setCurrentItem({...currentItem, name: e.target.value})}
-              className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
-              placeholder="홍길동" />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">연락처 *</label>
+              className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="홍길동" /></div>
+          <div><label className="block text-xs font-medium text-slate-500 mb-1">연락처 *</label>
             <input type="text" value={currentItem.phone} onChange={e => setCurrentItem({...currentItem, phone: e.target.value})}
-              className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
-              placeholder="01012345678" />
-          </div>
+              className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="01012345678" /></div>
         </div>
-        <div className="mt-3">
-          <label className="block text-xs font-medium text-slate-500 mb-1">배송지 *</label>
+        <div className="mt-3"><label className="block text-xs font-medium text-slate-500 mb-1">배송지 *</label>
           <input type="text" value={currentItem.address} onChange={e => setCurrentItem({...currentItem, address: e.target.value})}
-            className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
-            placeholder="서울시 강남구 역삼동 123-45" />
-        </div>
-        <div className="mt-3">
-          <label className="block text-xs font-medium text-slate-500 mb-1">배송메세지</label>
+            className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="서울시 강남구..." /></div>
+        <div className="mt-3"><label className="block text-xs font-medium text-slate-500 mb-1">배송메세지</label>
           <input type="text" value={currentItem.message} onChange={e => setCurrentItem({...currentItem, message: e.target.value})}
-            className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none"
-            placeholder="문 앞에 놓아주세요" />
-        </div>
+            className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="문 앞에 놓아주세요" /></div>
 
         <div className="mt-4">
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-medium text-slate-500">제품 (약어 입력 → 자동매칭)</label>
+            <label className="text-xs font-medium text-slate-500">제품 (약어·초성·부분 검색 가능)</label>
             <button type="button" onClick={addProductRow} className="text-xs text-indigo-600 font-medium hover:text-indigo-800">+ 제품 추가</button>
           </div>
           {currentItem.products.map((p, idx) => (
-            <div key={idx} className="flex gap-2 mb-2 items-start">
-              <div className="flex-1">
-                <input type="text" value={p.keyword}
-                  onChange={e => updateProductKeyword(idx, e.target.value)}
-                  className={`w-full px-4 py-3 rounded-xl border focus:ring-2 focus:ring-indigo-200 outline-none text-sm ${
-                    p.keyword && p.matched ? 'border-emerald-400 bg-emerald-50' :
-                    p.keyword && !p.matched ? 'border-amber-400 bg-amber-50' : 'border-slate-300'
-                  }`}
-                  placeholder={aliases.length > 0 ? `예: ${aliases.slice(0,3).map(a=>a.alias).join(', ')}` : '매입처를 먼저 선택하세요'} />
-                {p.matched && (
-                  <p className="text-xs text-emerald-600 mt-1 ml-1">✓ {p.matched.product_full_name} ({formatNumber(p.matched.unit_price)}원)</p>
-                )}
-                {p.keyword && !p.matched && aliases.length > 0 && (
-                  <p className="text-xs text-amber-600 mt-1 ml-1">⚠ 매칭 안됨 (등록된 약어: {aliases.map(a=>a.alias).join(', ')})</p>
-                )}
-                {p.keyword && !p.matched && aliases.length === 0 && (
-                  <p className="text-xs text-red-500 mt-1 ml-1">❌ 약어 매핑이 없습니다. 약어 매핑 메뉴에서 등록해주세요.</p>
+            <div key={idx} className="mb-3">
+              <div className="flex gap-2 items-start">
+                <div className="flex-1 relative">
+                  <input type="text" value={p.keyword}
+                    onChange={e => updateProductKeyword(idx, e.target.value)}
+                    className={`w-full px-4 py-3 rounded-xl border focus:ring-2 focus:ring-indigo-200 outline-none text-sm ${
+                      p.keyword && p.matched ? 'border-emerald-400 bg-emerald-50' :
+                      p.keyword && !p.matched ? 'border-amber-400 bg-amber-50' : 'border-slate-300'
+                    }`}
+                    placeholder={aliases.length > 0 ? `약어, 초성(ㅈㅎ), 부분명(직화) 모두 가능` : '매입처를 먼저 선택하세요'} />
+
+                  {/* 자동 매칭 성공 */}
+                  {p.matched && (
+                    <p className="text-xs text-emerald-600 mt-1 ml-1">✓ {p.matched.product_full_name} ({formatNumber(p.matched.unit_price)}원)</p>
+                  )}
+
+                  {/* 매칭 안 됐지만 후보가 있을 때 → 드롭다운 */}
+                  {p.showCandidates && p.candidates.length > 0 && (
+                    <div className="absolute z-20 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                      <p className="px-3 py-1.5 text-xs text-slate-400 bg-slate-50">혹시 이 제품인가요? (클릭하면 자동 학습됩니다)</p>
+                      {p.candidates.map((c, ci) => (
+                        <button key={ci} onClick={() => selectCandidate(idx, c)}
+                          className="w-full text-left px-3 py-2.5 text-sm hover:bg-indigo-50 border-b last:border-0 flex items-center justify-between">
+                          <div>
+                            <span className="text-indigo-600 font-medium">{c.alias}</span>
+                            <span className="text-slate-400 mx-1">→</span>
+                            <span className="text-slate-700">{c.product_full_name}</span>
+                          </div>
+                          <span className="text-xs text-slate-400 ml-2">{formatNumber(c.unit_price)}원</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 아무 결과도 없을 때 */}
+                  {p.keyword && !p.matched && p.candidates.length === 0 && aliases.length > 0 && (
+                    <p className="text-xs text-amber-600 mt-1 ml-1">⚠ 매칭 안됨 - 약어 매핑에서 등록하거나 자동 생성을 해주세요</p>
+                  )}
+                  {p.keyword && !p.matched && aliases.length === 0 && (
+                    <p className="text-xs text-red-500 mt-1 ml-1">❌ 약어 매핑이 없습니다. 약어 매핑 → 자동 생성 버튼을 눌러주세요.</p>
+                  )}
+                </div>
+                <div className="w-20">
+                  <input type="number" value={p.qty} onChange={e => updateProductQty(idx, e.target.value)}
+                    className="w-full px-3 py-3 rounded-xl border border-slate-300 text-center text-sm outline-none" min="1" placeholder="수량" />
+                </div>
+                {currentItem.products.length > 1 && (
+                  <button type="button" onClick={() => removeProductRow(idx)} className="px-3 py-3 text-red-400 hover:text-red-600 text-sm">✕</button>
                 )}
               </div>
-              <div className="w-20">
-                <input type="number" value={p.qty} onChange={e => updateProductQty(idx, e.target.value)}
-                  className="w-full px-3 py-3 rounded-xl border border-slate-300 text-center text-sm outline-none" min="1" placeholder="수량" />
-              </div>
-              {currentItem.products.length > 1 && (
-                <button type="button" onClick={() => removeProductRow(idx)}
-                  className="px-3 py-3 text-red-400 hover:text-red-600 text-sm">✕</button>
-              )}
             </div>
           ))}
         </div>
 
-        <button onClick={addItem}
-          className="mt-4 w-full py-3 rounded-xl bg-indigo-600 text-white font-medium hover:bg-indigo-700 transition-colors">
+        <button onClick={addItem} className="mt-4 w-full py-3 rounded-xl bg-indigo-600 text-white font-medium hover:bg-indigo-700 transition-colors">
           📦 주문 추가
         </button>
       </div>
@@ -587,8 +624,7 @@ function OrderInput() {
       {/* 하단 버튼 */}
       {items.length > 0 && (
         <div className="flex gap-3">
-          <button onClick={downloadExcel}
-            className="flex-1 py-4 rounded-2xl bg-emerald-600 text-white font-semibold text-lg hover:bg-emerald-700 transition-colors">
+          <button onClick={downloadExcel} className="flex-1 py-4 rounded-2xl bg-emerald-600 text-white font-semibold text-lg hover:bg-emerald-700 transition-colors">
             📥 엑셀 다운로드
           </button>
           <button onClick={saveOrderToDB} disabled={saving}
@@ -598,23 +634,26 @@ function OrderInput() {
         </div>
       )}
 
-      {/* 등록된 약어 안내 */}
+      {/* 사용 가능한 약어 */}
       {selectedSupplier && (
         <div className="bg-slate-50 rounded-2xl border border-slate-200 p-6">
-          <h4 className="text-xs font-semibold text-slate-500 mb-3">💡 사용 가능한 약어 ({aliases.length}개)</h4>
+          <h4 className="text-xs font-semibold text-slate-500 mb-3">💡 사용 가능한 약어 ({aliases.length}개) — 초성, 부분 입력도 자동 매칭됩니다</h4>
           {aliases.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              {aliases.map(a => (
-                <span key={a.id} className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white rounded-lg border border-slate-200 text-xs">
+              {aliases.slice(0, 50).map((a, i) => (
+                <span key={a.id || i} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs ${
+                  a.is_auto ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'
+                }`}>
                   <span className="font-semibold text-indigo-600">{a.alias}</span>
                   <span className="text-slate-400">→</span>
                   <span className="text-slate-600">{a.product_full_name}</span>
                   <span className="text-slate-400">({formatNumber(a.unit_price)}원)</span>
                 </span>
               ))}
+              {aliases.length > 50 && <span className="text-xs text-slate-400 self-center">... 외 {aliases.length - 50}개</span>}
             </div>
           ) : (
-            <p className="text-xs text-red-500">약어 매핑이 없습니다. 약어 매핑 메뉴에서 등록해주세요.</p>
+            <p className="text-xs text-red-500">약어 매핑이 없습니다. 약어 매핑 메뉴 → "자동 생성" 버튼을 눌러주세요.</p>
           )}
         </div>
       )}
