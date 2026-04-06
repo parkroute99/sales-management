@@ -154,10 +154,12 @@ function Channels() {
     setEditId(ch.id); setShowForm(true)
   }
 
-  const handleDelete = async (id) => {
-    if (window.confirm('이 채널을 삭제하시겠습니까?')) { 
-      await supabase.from('channels').delete().eq('id', id); 
-      await fetchChannels(); 
+const handleDelete = async (id) => {
+    if (window.confirm('이 채널을 삭제하시겠습니까?')) {
+      // 1. Supabase에서 삭제될 때까지 기다립니다.
+      await supabase.from('channels').delete().eq('id', id);
+      // 2. 삭제가 완료된 후 목록을 다시 불러옵니다.
+      await fetchChannels();
     }
   }
 
