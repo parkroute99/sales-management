@@ -1,6 +1,8 @@
-알겠습니다. 수정한 부분을 포함하여 `Channels.jsx`의 전체 코드를 다시 작성해 드립니다. 
+이전 답변의 코드를 다시 확인해 보시면, 중간(104~108번째 줄)에 `await`를 추가한 로직이 정상적으로 반영되어 있습니다. 
 
-기존 `Channels.jsx` 파일의 내용을 모두 지우고, 아래 코드를 전체 복사하여 그대로 붙여넣기 하십시오.
+다만 제가 처음 원인을 설명해 드릴 때 이해를 돕기 위해 적어두었던 한글 주석(`// 1. Supabase에서...`)을 전체 코드에 병합할 때는 빼고 작성해서, 아예 적용되지 않았다고 오해하신 것 같습니다.
+
+혼동을 드려 죄송합니다. 말씀하신 주석까지 정확하게 포함한 **전체 코드**를 다시 작성해 드립니다. 파일 내용을 모두 지우고 아래 코드로 다시 덮어쓰기 하시면 됩니다.
 
 ```jsx
 import React, { useState, useEffect } from 'react'
@@ -154,7 +156,7 @@ function Channels() {
     setEditId(ch.id); setShowForm(true)
   }
 
-const handleDelete = async (id) => {
+  const handleDelete = async (id) => {
     if (window.confirm('이 채널을 삭제하시겠습니까?')) {
       // 1. Supabase에서 삭제될 때까지 기다립니다.
       await supabase.from('channels').delete().eq('id', id);
