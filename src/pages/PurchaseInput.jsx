@@ -19,7 +19,6 @@ function PurchaseInput() {
   const [excelSaving, setExcelSaving] = useState(false)
   const fileInputRef = useRef(null)
 
-  // 제품 즉석 등록 상태
   const [showNewProduct, setShowNewProduct] = useState(false)
   const [newProductForm, setNewProductForm] = useState({
     product_code: '', product_name: '', category: '',
@@ -110,16 +109,9 @@ function PurchaseInput() {
 
       if (error) throw error
 
-      // 제품 목록 갱신 & 바로 선택
       await fetchProducts()
       selectProduct(data)
-
-      // 매입가 자동 입력
-      setForm(prev => ({
-        ...prev,
-        purchase_price: newProductForm.purchase_cost,
-      }))
-
+      setForm(prev => ({ ...prev, purchase_price: newProductForm.purchase_cost }))
       setShowNewProduct(false)
       alert(`"${data.product_name}" 제품이 등록되고 선택되었습니다!`)
     } catch (err) {
@@ -173,7 +165,7 @@ function PurchaseInput() {
     setSaving(false)
   }
 
-  /* ── 엑셀 ── */
+  /* ── 엑셀 업로드 ── */
   const handleExcelUpload = (e) => {
     const file = e.target.files[0]; if (!file) return
     setExcelFileName(file.name)
@@ -187,35 +179,98 @@ function PurchaseInput() {
     e.target.value = ''
   }
 
+  /* ── 엑셀 일괄 저장 (미등록 제품 자동 등록 포함) ── */
   const handleExcelSave = async () => {
     if (!selectedSupplier) { alert('매입처를 먼저 선택하세요.'); return }
     if (excelData.length === 0) { alert('엑셀 데이터가 없습니다.'); return }
-    setExcelSaving(true)
-    const user = (await supabase.auth.getUser()).data.user
-    let success = 0, fail = 0
+
+    // 1단계: 미등록 제품 확인
+    const unregistered = []
     for (const row of excelData) {
       const productCode = row['제품코드'] || row['product_code'] || ''
       const productName = row['제품명'] || row['product_name'] || ''
-      const product = products.find(p => p.product_code === productCode || p.product_name === productName)
-      if (!product) { fail++; continue }
+      if (!productCode && !productName) continue
+      const found = products.find(p => p.product_code === productCode || p.product_name === productName)
+      if (!found) {
+        const already = unregistered.find(u => u.code === productCode || u.name === productName)
+        if (!already) {
+          unregistered.push({
+            code: productCode,
+            name: productName,
+            purchaseCost: Number(row['매입단가'] || row['purchase_price'] || row['매입원가'] || row['purchase_cost'] || 0),
+            category: row['카테고리'] || row['category'] || '',
+          })
+        }
+      }
+    }
+
+    // 2단계: 미등록 제품이 있으면 확인
+    if (unregistered.length > 0) {
+      const list = unregistered.map(u => `  • ${u.code || '(코드없음)'} - ${u.name || '(이름없음)'} (매입가: ${formatNumber(u.purchaseCost)}원)`).join('\n')
+      const ok = window.confirm(
+        `⚠️ 미등록 제품 ${unregistered.length}건이 발견되었습니다.\n\n${list}\n\n이 제품들을 자동으로 등록하고 매입을 진행하시겠습니까?`
+      )
+      if (!ok) return
+    }
+
+    setExcelSaving(true)
+    const user = (await supabase.auth.getUser()).data.user
+    let successPurchase = 0, failPurchase = 0, newProducts = 0
+
+    // 3단계: 미등록 제품 자동 등록
+    for (const u of unregistered) {
+      if (!u.code || !u.name) { continue }
+      const { error } = await supabase.from('products').insert({
+        product_code: u.code,
+        product_name: u.name,
+        category: u.category || null,
+        purchase_cost: u.purchaseCost,
+        packaging_cost: 0,
+        additional_cost: 0,
+        supplier_id: selectedSupplier.id,
+        created_by: user.id,
+      })
+      if (!error) newProducts++
+    }
+
+    // 제품 목록 새로 로드
+    const { data: freshProducts } = await supabase.from('products').select('*, suppliers(supplier_name)').eq('is_active', true)
+    const allProducts = freshProducts || []
+
+    // 4단계: 매입 등록
+    for (const row of excelData) {
+      const productCode = row['제품코드'] || row['product_code'] || ''
+      const productName = row['제품명'] || row['product_name'] || ''
+      const product = allProducts.find(p => p.product_code === productCode || p.product_name === productName)
+      if (!product) { failPurchase++; continue }
+
+      const qty = Number(row['수량'] || row['quantity'] || 1)
+      const price = Number(row['매입단가'] || row['purchase_price'] || 0)
+      const shipping = Number(row['배송비'] || row['shipping_cost'] || 0)
+      const additional = Number(row['부대비용'] || row['additional_cost'] || 0)
+      const total = Number(row['총금액'] || row['total_amount'] || 0) || (price * qty) + shipping + additional
+
       const { error } = await supabase.from('purchases').insert({
         supplier_id: selectedSupplier.id, product_id: product.id,
         purchase_date: row['매입일자'] || row['purchase_date'] || new Date().toISOString().split('T')[0],
-        quantity: Number(row['수량'] || row['quantity'] || 1),
-        purchase_price: Number(row['매입단가'] || row['purchase_price'] || 0),
-        shipping_cost: Number(row['배송비'] || row['shipping_cost'] || 0),
-        additional_cost: Number(row['부대비용'] || row['additional_cost'] || 0),
-        total_amount: Number(row['총금액'] || row['total_amount'] || 0) ||
-          (Number(row['매입단가']||0) * Number(row['수량']||1)) + Number(row['배송비']||0) + Number(row['부대비용']||0),
+        quantity: qty, purchase_price: price, shipping_cost: shipping,
+        additional_cost: additional, total_amount: total,
         memo: row['메모'] || row['memo'] || null,
         input_method: 'EXCEL', source_file_name: excelFileName,
         created_by: user.id, updated_by: user.id,
       })
-      if (error) fail++; else success++
+      if (error) failPurchase++; else successPurchase++
     }
-    alert(`완료! 성공: ${success}건, 실패: ${fail}건`)
+
+    let msg = `✅ 매입 등록 완료!\n\n`
+    if (newProducts > 0) msg += `🆕 신규 제품 등록: ${newProducts}건\n`
+    msg += `📦 매입 성공: ${successPurchase}건`
+    if (failPurchase > 0) msg += `\n❌ 매입 실패: ${failPurchase}건`
+    alert(msg)
+
     setExcelData([]); setExcelFileName('')
     setExcelSaving(false)
+    fetchProducts()
   }
 
   return (
@@ -318,7 +373,7 @@ function PurchaseInput() {
             )}
           </div>
 
-          {/* 새 제품 등록 폼 (인라인) */}
+          {/* 새 제품 등록 폼 */}
           {showNewProduct && (
             <div className="bg-emerald-50 rounded-2xl border-2 border-emerald-300 p-6 space-y-4">
               <div className="flex items-center justify-between">
