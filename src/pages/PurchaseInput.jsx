@@ -604,8 +604,11 @@ function PurchaseInput() {
               </button>
             </>
           )}
-        </div>
+              </div>
       )}
-
+    </div>
+  )
+}
 
 export default PurchaseInput
+
