@@ -24,8 +24,6 @@ const emptyItem = () => ({
   commissionType: 'rate',
   commissionRate: 15,
   commissionFixed: 0,
-  shippingReceived: 0,
-  shippingCost: 3000,
   additionalFee: 0,
   memo: '',
   unitCost: 0,
@@ -48,7 +46,13 @@ export default function SalesInput() {
   const [excelData, setExcelData] = useState(null)
   const [saleDate, setSaleDate] = useState(new Date().toISOString().slice(0, 10))
 
-  /* ── 데이터 로드 (실제 DB 컬럼명에 맞춤) ── */
+  /* ── 배송비: 주문 단위로 관리 ── */
+  const [shippingReceived, setShippingReceived] = useState(0)       // 고객에게 받은 배송비 (총액)
+  const [shippingReceivedMode, setShippingReceivedMode] = useState('once') // 'once'=1회, 'per'=개당
+  const [shippingCost, setShippingCost] = useState(3000)            // 실제 택배비 (총액)
+  const [shippingCostMode, setShippingCostMode] = useState('once')  // 'once'=1회, 'per'=개당
+
+  /* ── 데이터 로드 ── */
   useEffect(() => {
     ;(async () => {
       setLoading(true)
@@ -57,9 +61,6 @@ export default function SalesInput() {
         supabase.from('suppliers').select('*').eq('is_active', true).order('supplier_name'),
         supabase.from('products').select('*, suppliers(supplier_name)').eq('is_active', true).order('product_name'),
       ])
-      if (chRes.error) console.error('channels error:', chRes.error)
-      if (spRes.error) console.error('suppliers error:', spRes.error)
-      if (prRes.error) console.error('products error:', prRes.error)
       setChannels(chRes.data || [])
       setSuppliers(spRes.data || [])
       setProducts(prRes.data || [])
@@ -70,13 +71,13 @@ export default function SalesInput() {
   /* ── 채널 선택 ── */
   const handleChannelSelect = (ch) => {
     setSelectedChannel(ch)
+    setShippingReceived(ch.default_shipping_cost ?? 0)
     setItems((prev) =>
       prev.map((it) => ({
         ...it,
         commissionType: ch.default_commission_type === 'fixed' ? 'fixed' : 'rate',
         commissionRate: ch.default_commission_rate ?? 15,
         commissionFixed: ch.default_commission_fixed ?? 0,
-        shippingReceived: ch.default_shipping_cost ?? 0,
       }))
     )
   }
@@ -133,28 +134,50 @@ export default function SalesInput() {
     return item.commissionFixed
   }
 
-  /* ── 마진 계산 ── */
-  const calcMargin = (item) => {
+  /* ── 총 수량 ── */
+  const totalQty = items.reduce((s, it) => s + (it.productId ? it.quantity : 0), 0)
+
+  /* ── 배송비 실제 합계 계산 ── */
+  const calcShippingReceivedTotal = () => {
+    if (shippingReceivedMode === 'once') return shippingReceived
+    return shippingReceived * totalQty
+  }
+
+  const calcShippingCostTotal = () => {
+    if (shippingCostMode === 'once') return shippingCost
+    return shippingCost * totalQty
+  }
+
+  /* ── 마진 계산 (배송비는 주문 단위로 별도) ── */
+  const calcItemMargin = (item) => {
     const qty = item.quantity
     const revenue = item.sellingPrice * qty
     const cost = item.unitCost * qty
     const commission = getCommission(item) * qty
-    const supplyTotal = item.supplyPrice * qty
-    const shippingRcv = item.shippingReceived * qty
-    const shippingReal = item.shippingCost
     const additional = item.additionalFee
-    const supplyPlusShipping = supplyTotal + shippingRcv
-    const profit = revenue - cost - commission - shippingReal - additional
+    const profit = revenue - cost - commission - additional
     const marginRate = revenue > 0 ? ((profit / revenue) * 100).toFixed(1) : '0.0'
-    return { revenue, cost, commission, supplyTotal, shippingRcv, shippingReal, additional, supplyPlusShipping, profit, marginRate }
+    return { revenue, cost, commission, additional, profit, marginRate, supplyTotal: item.supplyPrice * qty }
   }
 
   const totalMargin = () => {
-    let r = { revenue: 0, cost: 0, commission: 0, supplyTotal: 0, shippingRcv: 0, shippingReal: 0, additional: 0, supplyPlusShipping: 0, profit: 0 }
+    let r = { revenue: 0, cost: 0, commission: 0, additional: 0, supplyTotal: 0, profit: 0 }
     items.forEach((it) => {
-      const m = calcMargin(it)
-      Object.keys(r).forEach((k) => (r[k] += m[k]))
+      if (!it.productId) return
+      const m = calcItemMargin(it)
+      r.revenue += m.revenue
+      r.cost += m.cost
+      r.commission += m.commission
+      r.additional += m.additional
+      r.supplyTotal += m.supplyTotal
+      r.profit += m.profit
     })
+    const shippingRcvTotal = calcShippingReceivedTotal()
+    const shippingCostTotal = calcShippingCostTotal()
+    r.shippingReceived = shippingRcvTotal
+    r.shippingCost = shippingCostTotal
+    r.profit = r.profit - shippingCostTotal
+    r.totalOrderAmount = r.supplyTotal + shippingRcvTotal  // 거래처 발주 기준 총액
     r.marginRate = r.revenue > 0 ? ((r.profit / r.revenue) * 100).toFixed(1) : '0.0'
     return r
   }
@@ -166,7 +189,6 @@ export default function SalesInput() {
       base.commissionType = selectedChannel.default_commission_type === 'fixed' ? 'fixed' : 'rate'
       base.commissionRate = selectedChannel.default_commission_rate ?? 15
       base.commissionFixed = selectedChannel.default_commission_fixed ?? 0
-      base.shippingReceived = selectedChannel.default_shipping_cost ?? 0
     }
     setItems((prev) => [...prev, base])
     setActiveIdx(items.length)
@@ -241,15 +263,26 @@ export default function SalesInput() {
   /* ── 저장 ── */
   const handleSave = async () => {
     if (!selectedChannel) return alert('매출처를 선택하세요')
-    const valid = items.every((it) => it.productId)
-    if (!valid) return alert('모든 항목에 제품을 선택하세요')
-    const zeroCost = items.some((it) => it.unitCost === 0)
+    const validItems = items.filter((it) => it.productId)
+    if (validItems.length === 0) return alert('제품을 선택하세요')
+    const zeroCost = validItems.some((it) => it.unitCost === 0)
     if (zeroCost && !window.confirm('원가가 0원인 제품이 있습니다. 계속하시겠습니까?')) return
 
     setSaving(true)
     try {
-      for (const item of items) {
-        const m = calcMargin(item)
+      const shippingRcvTotal = calcShippingReceivedTotal()
+      const shippingCostTotal = calcShippingCostTotal()
+      const itemCount = validItems.length
+
+      for (let i = 0; i < validItems.length; i++) {
+        const item = validItems[i]
+        const m = calcItemMargin(item)
+
+        // 배송비를 첫 번째 아이템에만 할당 (DB에 저장할 때)
+        const isFirst = i === 0
+        const itemShippingRcv = isFirst ? shippingRcvTotal : 0
+        const itemShippingCost = isFirst ? shippingCostTotal : 0
+
         const record = {
           channel_id: selectedChannel.id,
           supplier_id: selectedSupplier || null,
@@ -262,23 +295,27 @@ export default function SalesInput() {
           commission_rate: item.commissionRate,
           commission_fixed: item.commissionFixed,
           commission_amount: m.commission,
-          shipping_fee_received: item.shippingReceived,
-          shipping_cost: m.shippingReal,
+          shipping_fee_received: itemShippingRcv,
+          shipping_cost: itemShippingCost,
           additional_fee: item.additionalFee,
           product_cost: m.cost,
           total_revenue: m.revenue,
-          total_cost: m.cost + m.commission + m.shippingReal + m.additional,
-          net_profit: m.profit,
-          margin_rate: parseFloat(m.marginRate),
-          memo: item.memo,
+          total_cost: m.cost + m.commission + itemShippingCost + item.additionalFee,
+          net_profit: m.profit - itemShippingCost,
+          margin_rate: m.revenue > 0 ? parseFloat(((m.profit - itemShippingCost) / m.revenue * 100).toFixed(1)) : 0,
+          memo: item.memo || (itemCount > 1 ? `${itemCount}건 중 ${i + 1}번` : ''),
           input_method: 'manual',
         }
         const { error } = await supabase.from('sales').insert(record)
         if (error) throw error
       }
-      alert(`${items.length}건 매출이 등록되었습니다`)
+      alert(`${validItems.length}건 매출이 등록되었습니다`)
       setItems([emptyItem()])
       setActiveIdx(0)
+      setShippingReceived(selectedChannel?.default_shipping_cost ?? 0)
+      setShippingReceivedMode('once')
+      setShippingCost(3000)
+      setShippingCostMode('once')
     } catch (err) {
       console.error('Save error:', err)
       alert('저장 실패: ' + err.message)
@@ -392,7 +429,7 @@ export default function SalesInput() {
             수수료: {selectedChannel.default_commission_type === 'fixed'
               ? `${fmt(selectedChannel.default_commission_fixed)}원`
               : `${selectedChannel.default_commission_rate}%`}
-            {' · '}기본 배송비: {fmt(selectedChannel.default_shipping_cost)}원
+            {' · '}기본 배송비 수취: {fmt(selectedChannel.default_shipping_cost)}원
           </p>
         )}
       </div>
@@ -410,6 +447,106 @@ export default function SalesInput() {
             <option key={s.id} value={s.id}>{s.supplier_name}</option>
           ))}
         </select>
+      </div>
+
+      {/* ═══ 배송비 영역 (주문 단위) ═══ */}
+      <div className="bg-white rounded-xl border p-4 space-y-4">
+        <h3 className="text-sm font-semibold text-gray-600">📦 배송비 설정</h3>
+        <p className="text-xs text-gray-400">이 주문 전체에 적용되는 배송비입니다. "1회"를 선택하면 수량에 관계없이 한 번만 적용되고, "개당"을 선택하면 총 수량에 곱해집니다.</p>
+
+        <div className="grid grid-cols-2 gap-4">
+          {/* 배송비 수취 */}
+          <div className="bg-blue-50 rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-blue-700">고객 배송비 수취</label>
+              <div className="flex bg-white rounded-lg overflow-hidden border border-blue-200">
+                <button
+                  onClick={() => setShippingReceivedMode('once')}
+                  className={`px-3 py-1 text-xs font-medium transition ${
+                    shippingReceivedMode === 'once' ? 'bg-blue-500 text-white' : 'text-blue-600 hover:bg-blue-100'
+                  }`}
+                >
+                  1회
+                </button>
+                <button
+                  onClick={() => setShippingReceivedMode('per')}
+                  className={`px-3 py-1 text-xs font-medium transition ${
+                    shippingReceivedMode === 'per' ? 'bg-blue-500 text-white' : 'text-blue-600 hover:bg-blue-100'
+                  }`}
+                >
+                  개당
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={fmt(shippingReceived)}
+                onChange={(e) => setShippingReceived(parseNum(e.target.value))}
+                className="flex-1 border border-blue-200 rounded-lg px-3 py-2 text-sm text-right font-medium bg-white"
+              />
+              <span className="text-sm text-blue-500">원</span>
+            </div>
+            {shippingReceivedMode === 'per' && totalQty > 0 && (
+              <p className="text-xs text-blue-600 font-medium">
+                = {fmt(shippingReceived)} × {totalQty}개 = <span className="font-bold">{fmt(shippingReceived * totalQty)}원</span>
+              </p>
+            )}
+            {shippingReceivedMode === 'once' && (
+              <p className="text-xs text-blue-500">수량과 관계없이 {fmt(shippingReceived)}원 1회</p>
+            )}
+          </div>
+
+          {/* 실 배송비 */}
+          <div className="bg-red-50 rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-red-700">실제 배송비 (택배비)</label>
+              <div className="flex bg-white rounded-lg overflow-hidden border border-red-200">
+                <button
+                  onClick={() => setShippingCostMode('once')}
+                  className={`px-3 py-1 text-xs font-medium transition ${
+                    shippingCostMode === 'once' ? 'bg-red-500 text-white' : 'text-red-600 hover:bg-red-100'
+                  }`}
+                >
+                  1회
+                </button>
+                <button
+                  onClick={() => setShippingCostMode('per')}
+                  className={`px-3 py-1 text-xs font-medium transition ${
+                    shippingCostMode === 'per' ? 'bg-red-500 text-white' : 'text-red-600 hover:bg-red-100'
+                  }`}
+                >
+                  개당
+                </button>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={fmt(shippingCost)}
+                onChange={(e) => setShippingCost(parseNum(e.target.value))}
+                className="flex-1 border border-red-200 rounded-lg px-3 py-2 text-sm text-right font-medium bg-white"
+              />
+              <span className="text-sm text-red-500">원</span>
+            </div>
+            {shippingCostMode === 'per' && totalQty > 0 && (
+              <p className="text-xs text-red-600 font-medium">
+                = {fmt(shippingCost)} × {totalQty}개 = <span className="font-bold">{fmt(shippingCost * totalQty)}원</span>
+              </p>
+            )}
+            {shippingCostMode === 'once' && (
+              <p className="text-xs text-red-500">수량과 관계없이 {fmt(shippingCost)}원 1회</p>
+            )}
+          </div>
+        </div>
+
+        {/* 배송비 요약 */}
+        <div className="bg-gray-50 rounded-lg p-3 flex items-center justify-between">
+          <span className="text-xs text-gray-500">배송비 차이 (수취 - 실비)</span>
+          <span className={`text-sm font-bold ${calcShippingReceivedTotal() - calcShippingCostTotal() >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            {fmt(calcShippingReceivedTotal() - calcShippingCostTotal())}원
+          </span>
+        </div>
       </div>
 
       {/* 아이템 탭 */}
@@ -431,6 +568,7 @@ export default function SalesInput() {
                 }`}
               >
                 {it.productName || `제품 ${idx + 1}`}
+                {it.quantity > 1 && ` ×${it.quantity}`}
               </button>
               {items.length > 1 && (
                 <button
@@ -615,28 +753,10 @@ export default function SalesInput() {
             </div>
           </div>
 
-          {/* 배송비 · 추가비용 · 메모 */}
-          <div className="grid grid-cols-3 gap-3">
+          {/* 추가비용 · 메모 */}
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">배송비 수취 (개당)</label>
-              <input
-                type="text"
-                value={fmt(cur.shippingReceived)}
-                onChange={(e) => updateItem(curIdx, { shippingReceived: parseNum(e.target.value) })}
-                className="w-full border rounded-lg px-3 py-2 text-sm text-right"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">실 배송비 (건당)</label>
-              <input
-                type="text"
-                value={fmt(cur.shippingCost)}
-                onChange={(e) => updateItem(curIdx, { shippingCost: parseNum(e.target.value) })}
-                className="w-full border rounded-lg px-3 py-2 text-sm text-right"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">추가비용</label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">추가비용 (이 제품)</label>
               <input
                 type="text"
                 value={fmt(cur.additionalFee)}
@@ -644,42 +764,32 @@ export default function SalesInput() {
                 className="w-full border rounded-lg px-3 py-2 text-sm text-right"
               />
             </div>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">메모</label>
-            <input
-              type="text"
-              value={cur.memo}
-              onChange={(e) => updateItem(curIdx, { memo: e.target.value })}
-              placeholder="메모 (선택)"
-              className="w-full border rounded-lg px-3 py-2 text-sm"
-            />
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">메모</label>
+              <input
+                type="text"
+                value={cur.memo}
+                onChange={(e) => updateItem(curIdx, { memo: e.target.value })}
+                placeholder="메모 (선택)"
+                className="w-full border rounded-lg px-3 py-2 text-sm"
+              />
+            </div>
           </div>
 
           {/* 개별 마진 미리보기 */}
           {cur.productId && (() => {
-            const m = calcMargin(cur)
+            const m = calcItemMargin(cur)
             return (
               <div className="bg-white border rounded-lg p-3 space-y-1">
-                <h4 className="text-xs font-semibold text-gray-500 mb-2">이 제품 마진 미리보기</h4>
+                <h4 className="text-xs font-semibold text-gray-500 mb-2">이 제품 마진 미리보기 (배송비 제외)</h4>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                   <div className="flex justify-between"><span className="text-gray-500">총 매출</span><span className="font-medium">{fmt(m.revenue)}원</span></div>
                   <div className="flex justify-between"><span className="text-gray-500">총 원가</span><span className="font-medium text-red-500">-{fmt(m.cost)}원</span></div>
                   <div className="flex justify-between"><span className="text-gray-500">수수료</span><span className="font-medium text-red-500">-{fmt(m.commission)}원</span></div>
-                  <div className="flex justify-between"><span className="text-gray-500">배송비</span><span className="font-medium text-red-500">-{fmt(m.shippingReal)}원</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">추가비용</span><span className="font-medium text-red-500">-{fmt(m.additional)}원</span></div>
                   <div className="flex justify-between border-t pt-1 col-span-2">
                     <span className="text-blue-600 font-semibold">공급가 합계</span>
                     <span className="font-bold text-blue-600">{fmt(m.supplyTotal)}원</span>
-                  </div>
-                  <div className="flex justify-between col-span-2">
-                    <span className="text-blue-600 font-semibold">공급가 + 배송비수취</span>
-                    <span className="font-bold text-blue-600">{fmt(m.supplyPlusShipping)}원</span>
-                  </div>
-                  <div className="flex justify-between border-t pt-1 col-span-2">
-                    <span className={`font-bold ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>순이익</span>
-                    <span className={`font-bold ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {fmt(m.profit)}원 ({m.marginRate}%)
-                    </span>
                   </div>
                 </div>
               </div>
@@ -691,7 +801,7 @@ export default function SalesInput() {
       {/* 전체 마진 요약 */}
       {items.some((it) => it.productId) && (
         <div className="bg-white rounded-xl border p-4 space-y-3">
-          <h3 className="text-sm font-semibold text-gray-600">전체 마진 요약 ({items.filter(it => it.productId).length}건)</h3>
+          <h3 className="text-sm font-semibold text-gray-600">전체 주문 요약 ({items.filter(it => it.productId).length}건 · 총 {totalQty}개)</h3>
 
           <div className="overflow-auto">
             <table className="w-full text-sm">
@@ -699,17 +809,16 @@ export default function SalesInput() {
                 <tr className="bg-gray-50 text-gray-500 text-xs">
                   <th className="px-2 py-1 text-left">제품</th>
                   <th className="px-2 py-1 text-right">수량</th>
-                  <th className="px-2 py-1 text-right">공급가</th>
-                  <th className="px-2 py-1 text-right">판매가</th>
+                  <th className="px-2 py-1 text-right">공급가 합계</th>
+                  <th className="px-2 py-1 text-right">판매가 합계</th>
                   <th className="px-2 py-1 text-right">원가</th>
                   <th className="px-2 py-1 text-right">수수료</th>
-                  <th className="px-2 py-1 text-right">이익</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((it) => {
                   if (!it.productId) return null
-                  const m = calcMargin(it)
+                  const m = calcItemMargin(it)
                   return (
                     <tr key={it.id} className="border-t">
                       <td className="px-2 py-1.5">{it.productName}</td>
@@ -718,10 +827,17 @@ export default function SalesInput() {
                       <td className="px-2 py-1.5 text-right">{fmt(m.revenue)}</td>
                       <td className="px-2 py-1.5 text-right text-red-500">{fmt(m.cost)}</td>
                       <td className="px-2 py-1.5 text-right text-red-500">{fmt(m.commission)}</td>
-                      <td className={`px-2 py-1.5 text-right font-medium ${m.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmt(m.profit)}</td>
                     </tr>
                   )
                 })}
+                {/* 배송비 행 */}
+                <tr className="border-t bg-gray-50">
+                  <td className="px-2 py-1.5 font-medium text-gray-600" colSpan="2">📦 배송비</td>
+                  <td className="px-2 py-1.5 text-right text-blue-600 font-medium">+{fmt(calcShippingReceivedTotal())}</td>
+                  <td className="px-2 py-1.5 text-right"></td>
+                  <td className="px-2 py-1.5 text-right text-red-500 font-medium">{fmt(calcShippingCostTotal())}</td>
+                  <td className="px-2 py-1.5 text-right"></td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -740,19 +856,19 @@ export default function SalesInput() {
               <p className="text-lg font-bold text-orange-700">{fmt(tm.commission)}원</p>
             </div>
             <div className="bg-gray-50 rounded-lg p-3">
-              <p className="text-xs text-gray-500">총 배송비</p>
-              <p className="text-lg font-bold text-gray-700">{fmt(tm.shippingReal)}원</p>
+              <p className="text-xs text-gray-500">실 배송비</p>
+              <p className="text-lg font-bold text-gray-700">{fmt(tm.shippingCost)}원</p>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
-              <p className="text-xs text-indigo-500">공급가 합계</p>
-              <p className="text-xl font-bold text-indigo-700">{fmt(tm.supplyTotal)}원</p>
-            </div>
-            <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
-              <p className="text-xs text-indigo-500">공급가 + 배송비수취</p>
-              <p className="text-xl font-bold text-indigo-700">{fmt(tm.supplyPlusShipping)}원</p>
+          {/* 거래처 발주 기준 총액 */}
+          <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-indigo-500">거래처 발주 총액 (공급가 + 배송비 수취)</p>
+                <p className="text-xs text-indigo-400 mt-0.5">= 공급가 {fmt(tm.supplyTotal)}원 + 배송비수취 {fmt(tm.shippingReceived)}원</p>
+              </div>
+              <p className="text-2xl font-bold text-indigo-700">{fmt(tm.totalOrderAmount)}원</p>
             </div>
           </div>
 
