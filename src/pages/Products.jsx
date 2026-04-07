@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import * as XLSX from 'xlsx'
 
@@ -13,11 +12,14 @@ function Products() {
   const [loading, setLoading] = useState(true)
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false)
   const [showCategoryManager, setShowCategoryManager] = useState(false)
+  const [showUploadGuide, setShowUploadGuide] = useState(false)
   const [newCategory, setNewCategory] = useState('')
   const [editCategoryId, setEditCategoryId] = useState(null)
   const [editCategoryName, setEditCategoryName] = useState('')
   const [filterCategory, setFilterCategory] = useState('all')
   const [filterSupplier, setFilterSupplier] = useState('all')
+  const [uploadResult, setUploadResult] = useState(null)
+  const fileInputRef = useRef(null)
   const [form, setForm] = useState({
     product_code: '', product_name: '', category: '',
     purchase_cost: '', packaging_cost: '', additional_cost: '', supplier_id: ''
@@ -51,10 +53,7 @@ function Products() {
   const handleAddCategory = async () => {
     const name = newCategory.trim()
     if (!name) return
-    if (categories.find(c => c.name === name)) {
-      alert('이미 존재하는 카테고리입니다.')
-      return
-    }
+    if (categories.find(c => c.name === name)) { alert('이미 존재하는 카테고리입니다.'); return }
     const maxOrder = categories.length > 0 ? Math.max(...categories.map(c => c.sort_order || 0)) : 0
     const { error } = await supabase.from('categories').insert({ name, sort_order: maxOrder + 1 })
     if (error) { alert('추가 실패: ' + error.message); return }
@@ -66,14 +65,9 @@ function Products() {
     const name = editCategoryName.trim()
     if (!name) return
     if (name === oldName) { setEditCategoryId(null); return }
-    if (categories.find(c => c.name === name && c.id !== id)) {
-      alert('이미 존재하는 카테고리명입니다.')
-      return
-    }
-    // 카테고리명 수정
+    if (categories.find(c => c.name === name && c.id !== id)) { alert('이미 존재하는 카테고리명입니다.'); return }
     const { error } = await supabase.from('categories').update({ name }).eq('id', id)
     if (error) { alert('수정 실패: ' + error.message); return }
-    // 해당 카테고리를 사용하는 제품들도 업데이트
     await supabase.from('products').update({ category: name }).eq('category', oldName)
     setEditCategoryId(null)
     setEditCategoryName('')
@@ -91,10 +85,7 @@ function Products() {
     if (!window.confirm(msg)) return
     const { error } = await supabase.from('categories').delete().eq('id', id)
     if (error) { alert('삭제 실패: ' + error.message); return }
-    // 해당 카테고리 사용 제품의 카테고리를 null로
-    if (count > 0) {
-      await supabase.from('products').update({ category: null }).eq('category', name)
-    }
+    if (count > 0) await supabase.from('products').update({ category: null }).eq('category', name)
     if (form.category === name) setForm({ ...form, category: '' })
     if (filterCategory === name) setFilterCategory('all')
     fetchCategories()
@@ -147,7 +138,21 @@ function Products() {
     setShowCategoryDropdown(false)
   }
 
-  /* ── 엑셀 ── */
+  /* ── 샘플 엑셀 다운로드 ── */
+  const handleSampleDownload = () => {
+    const sampleData = [
+      { '제품코드': 'DOL-001', '제품명': '직화 고추장 불고기 180g', '카테고리': '밀키트', '매입처': '', '매입원가': 3500, '포장비': 200, '부대비용': 0 },
+      { '제품코드': 'DOL-002', '제품명': '국물 닭볶음탕 500g', '카테고리': '밀키트', '매입처': '', '매입원가': 4200, '포장비': 300, '부대비용': 0 },
+      { '제품코드': 'SK-001', '제품명': '프리미엄 에센스 50ml', '카테고리': '스킨케어', '매입처': '', '매입원가': 8000, '포장비': 500, '부대비용': 100 },
+    ]
+    const ws = XLSX.utils.json_to_sheet(sampleData)
+    ws['!cols'] = [{ wch: 12 }, { wch: 30 }, { wch: 12 }, { wch: 15 }, { wch: 10 }, { wch: 8 }, { wch: 10 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, '제품등록양식')
+    XLSX.writeFile(wb, '제품등록_샘플양식.xlsx')
+  }
+
+  /* ── 엑셀 제품목록 다운로드 ── */
   const handleExcelDownload = () => {
     const excelData = products.map(p => ({
       '제품코드': p.product_code, '제품명': p.product_name, '카테고리': p.category || '',
@@ -161,32 +166,48 @@ function Products() {
     XLSX.writeFile(wb, `제품목록_${new Date().toISOString().split('T')[0]}.xlsx`)
   }
 
+  /* ── 엑셀 업로드 ── */
   const handleExcelUpload = async (e) => {
     const file = e.target.files[0]; if (!file) return
     const reader = new FileReader()
     reader.onload = async (evt) => {
       const wb = XLSX.read(evt.target.result, { type: 'array' })
       const data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]])
+      if (data.length === 0) { alert('데이터가 없습니다.'); return }
+
       const user = (await supabase.auth.getUser()).data.user
-      let count = 0
-      for (const row of data) {
-        const code = row['제품코드'] || row['product_code']
-        const name = row['제품명'] || row['product_name']
-        if (!code || !name) continue
-        const existing = products.find(p => p.product_code === code)
-        if (existing) continue
-        const supplierName = row['매입처'] || row['supplier_name']
-        const supplierId = supplierName ? suppliers.find(s => s.supplier_name === supplierName)?.id : null
-        await supabase.from('products').insert({
-          product_code: code, product_name: name, category: row['카테고리'] || row['category'] || null,
+      const { data: freshProducts } = await supabase.from('products').select('product_code').eq('is_active', true)
+      const existingCodes = new Set((freshProducts || []).map(p => p.product_code))
+
+      let success = 0, skipped = 0, failed = 0, noCode = 0
+      const errors = []
+
+      for (let i = 0; i < data.length; i++) {
+        const row = data[i]
+        const code = String(row['제품코드'] || row['product_code'] || '').trim()
+        const name = String(row['제품명'] || row['product_name'] || '').trim()
+
+        if (!code && !name) continue
+        if (!code || !name) { noCode++; errors.push(`${i + 2}행: 제품코드 또는 제품명 누락`); continue }
+        if (existingCodes.has(code)) { skipped++; continue }
+
+        const supplierName = String(row['매입처'] || row['supplier_name'] || '').trim()
+        const supplierId = supplierName ? suppliers.find(s => s.supplier_name === supplierName)?.id || null : null
+        const category = String(row['카테고리'] || row['category'] || '').trim() || null
+
+        const { error } = await supabase.from('products').insert({
+          product_code: code, product_name: name, category,
           purchase_cost: Number(row['매입원가'] || row['purchase_cost'] || 0),
           packaging_cost: Number(row['포장비'] || row['packaging_cost'] || 0),
           additional_cost: Number(row['부대비용'] || row['additional_cost'] || 0),
           supplier_id: supplierId, created_by: user.id,
         })
-        count++
+
+        if (error) { failed++; errors.push(`${i + 2}행 "${name}": ${error.message}`) }
+        else { success++; existingCodes.add(code) }
       }
-      alert(`${count}개 제품이 등록되었습니다.`)
+
+      setUploadResult({ success, skipped, failed, noCode, errors, total: data.length })
       fetchProducts()
     }
     reader.readAsArrayBuffer(file)
@@ -201,7 +222,6 @@ function Products() {
     return matchSearch && matchCategory && matchSupplier
   })
   const formatNumber = (num) => Number(num || 0).toLocaleString()
-  const categoryNames = categories.map(c => c.name)
 
   if (loading) return (
     <div className="flex items-center justify-center h-64">
@@ -233,12 +253,139 @@ function Products() {
             🏷️ 카테고리 관리
           </button>
           <button onClick={handleExcelDownload} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-700">📥 다운로드</button>
-          <label className="px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 cursor-pointer">
-            📤 업로드<input type="file" accept=".xlsx,.xls,.csv" onChange={handleExcelUpload} className="hidden" />
-          </label>
+          <button onClick={() => setShowUploadGuide(!showUploadGuide)}
+            className={`px-4 py-2 rounded-xl text-sm font-medium ${showUploadGuide ? 'bg-blue-600 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+            📤 엑셀 업로드
+          </button>
           <button onClick={() => { resetForm(); setShowForm(true) }} className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700">+ 추가</button>
         </div>
       </div>
+
+      {/* ── 엑셀 업로드 가이드 패널 ── */}
+      {showUploadGuide && (
+        <div className="bg-white rounded-2xl border border-blue-200 p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-blue-800">📤 엑셀로 제품 대량 등록</h3>
+            <button onClick={() => { setShowUploadGuide(false); setUploadResult(null) }} className="text-slate-400 hover:text-slate-600 text-sm">✕ 닫기</button>
+          </div>
+
+          {/* 안내 */}
+          <div className="bg-blue-50 rounded-xl p-4 space-y-3">
+            <p className="text-sm font-semibold text-blue-800">엑셀 파일 형식 안내</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="bg-blue-100">
+                    <th className="px-3 py-2 text-left font-semibold text-blue-800 border border-blue-200">컬럼명</th>
+                    <th className="px-3 py-2 text-center font-semibold text-blue-800 border border-blue-200">필수</th>
+                    <th className="px-3 py-2 text-left font-semibold text-blue-800 border border-blue-200">설명</th>
+                    <th className="px-3 py-2 text-left font-semibold text-blue-800 border border-blue-200">예시</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="bg-white">
+                    <td className="px-3 py-2 font-semibold text-slate-700 border border-blue-200">제품코드</td>
+                    <td className="px-3 py-2 text-center text-red-500 font-bold border border-blue-200">필수</td>
+                    <td className="px-3 py-2 text-slate-600 border border-blue-200">제품 고유 코드 (중복 불가)</td>
+                    <td className="px-3 py-2 text-slate-500 border border-blue-200">DOL-001</td>
+                  </tr>
+                  <tr className="bg-blue-50/50">
+                    <td className="px-3 py-2 font-semibold text-slate-700 border border-blue-200">제품명</td>
+                    <td className="px-3 py-2 text-center text-red-500 font-bold border border-blue-200">필수</td>
+                    <td className="px-3 py-2 text-slate-600 border border-blue-200">제품의 정식 이름</td>
+                    <td className="px-3 py-2 text-slate-500 border border-blue-200">직화 고추장 불고기 180g</td>
+                  </tr>
+                  <tr className="bg-white">
+                    <td className="px-3 py-2 font-semibold text-slate-700 border border-blue-200">카테고리</td>
+                    <td className="px-3 py-2 text-center text-slate-400 border border-blue-200">선택</td>
+                    <td className="px-3 py-2 text-slate-600 border border-blue-200">제품 분류 (미입력시 비워둠)</td>
+                    <td className="px-3 py-2 text-slate-500 border border-blue-200">밀키트</td>
+                  </tr>
+                  <tr className="bg-blue-50/50">
+                    <td className="px-3 py-2 font-semibold text-slate-700 border border-blue-200">매입처</td>
+                    <td className="px-3 py-2 text-center text-slate-400 border border-blue-200">선택</td>
+                    <td className="px-3 py-2 text-slate-600 border border-blue-200">등록된 매입처명과 동일하게 입력</td>
+                    <td className="px-3 py-2 text-slate-500 border border-blue-200">돌구름푸드</td>
+                  </tr>
+                  <tr className="bg-white">
+                    <td className="px-3 py-2 font-semibold text-slate-700 border border-blue-200">매입원가</td>
+                    <td className="px-3 py-2 text-center text-slate-400 border border-blue-200">선택</td>
+                    <td className="px-3 py-2 text-slate-600 border border-blue-200">숫자만 입력 (원 단위)</td>
+                    <td className="px-3 py-2 text-slate-500 border border-blue-200">3500</td>
+                  </tr>
+                  <tr className="bg-blue-50/50">
+                    <td className="px-3 py-2 font-semibold text-slate-700 border border-blue-200">포장비</td>
+                    <td className="px-3 py-2 text-center text-slate-400 border border-blue-200">선택</td>
+                    <td className="px-3 py-2 text-slate-600 border border-blue-200">숫자만 입력 (원 단위)</td>
+                    <td className="px-3 py-2 text-slate-500 border border-blue-200">200</td>
+                  </tr>
+                  <tr className="bg-white">
+                    <td className="px-3 py-2 font-semibold text-slate-700 border border-blue-200">부대비용</td>
+                    <td className="px-3 py-2 text-center text-slate-400 border border-blue-200">선택</td>
+                    <td className="px-3 py-2 text-slate-600 border border-blue-200">숫자만 입력 (원 단위)</td>
+                    <td className="px-3 py-2 text-slate-500 border border-blue-200">0</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div className="text-xs text-blue-700 space-y-1 pt-2">
+              <p>• 첫 번째 행은 반드시 <strong>컬럼명</strong>이어야 합니다 (제품코드, 제품명, ...)</p>
+              <p>• <strong>제품코드가 이미 등록된 제품</strong>은 자동으로 건너뜁니다 (중복 등록 안 됨)</p>
+              <p>• 매입처는 <strong>매입처 관리에 등록된 이름과 정확히 일치</strong>해야 연결됩니다</p>
+              <p>• 금액 항목을 비워두면 0원으로 등록됩니다</p>
+              <p>• .xlsx, .xls, .csv 파일을 지원합니다</p>
+            </div>
+          </div>
+
+          {/* 버튼 영역 */}
+          <div className="flex gap-3">
+            <button onClick={handleSampleDownload}
+              className="px-5 py-3 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 border border-slate-300">
+              📋 샘플 양식 다운로드
+            </button>
+            <button onClick={() => fileInputRef.current?.click()}
+              className="flex-1 px-5 py-3 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700">
+              📤 엑셀 파일 선택하여 업로드
+            </button>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleExcelUpload} className="hidden" />
+          </div>
+
+          {/* 업로드 결과 */}
+          {uploadResult && (
+            <div className={`rounded-xl p-4 ${uploadResult.failed > 0 ? 'bg-amber-50 border border-amber-200' : 'bg-emerald-50 border border-emerald-200'}`}>
+              <p className="text-sm font-semibold mb-2 ${uploadResult.failed > 0 ? 'text-amber-800' : 'text-emerald-800'}">
+                업로드 결과
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                <div className="bg-white rounded-lg p-2">
+                  <p className="text-lg font-bold text-emerald-600">{uploadResult.success}</p>
+                  <p className="text-xs text-slate-500">등록 성공</p>
+                </div>
+                <div className="bg-white rounded-lg p-2">
+                  <p className="text-lg font-bold text-slate-400">{uploadResult.skipped}</p>
+                  <p className="text-xs text-slate-500">중복 건너뜀</p>
+                </div>
+                <div className="bg-white rounded-lg p-2">
+                  <p className="text-lg font-bold text-amber-600">{uploadResult.noCode}</p>
+                  <p className="text-xs text-slate-500">필수값 누락</p>
+                </div>
+                <div className="bg-white rounded-lg p-2">
+                  <p className="text-lg font-bold text-red-600">{uploadResult.failed}</p>
+                  <p className="text-xs text-slate-500">등록 실패</p>
+                </div>
+              </div>
+              {uploadResult.errors.length > 0 && (
+                <div className="mt-3 bg-white rounded-lg p-3 max-h-32 overflow-y-auto">
+                  <p className="text-xs font-semibold text-slate-500 mb-1">상세 오류:</p>
+                  {uploadResult.errors.map((err, i) => (
+                    <p key={i} className="text-xs text-red-600">• {err}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── 카테고리 관리 패널 ── */}
       {showCategoryManager && (
@@ -250,23 +397,18 @@ function Products() {
             </div>
             <button onClick={() => setShowCategoryManager(false)} className="text-slate-400 hover:text-slate-600 text-sm">✕ 닫기</button>
           </div>
-
-          {/* 카테고리 목록 */}
           <div className="space-y-2 mb-4">
             {categories.map((c, idx) => {
               const count = products.filter(p => p.category === c.name).length
               const isEditing = editCategoryId === c.id
               return (
-                <div key={c.id} className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200 group">
-                  {/* 순서 버튼 */}
+                <div key={c.id} className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200">
                   <div className="flex flex-col gap-0.5">
                     <button onClick={() => handleMoveCategory(c.id, 'up')} disabled={idx === 0}
                       className={`text-xs px-1 rounded ${idx === 0 ? 'text-slate-300' : 'text-slate-500 hover:bg-slate-200'}`}>▲</button>
                     <button onClick={() => handleMoveCategory(c.id, 'down')} disabled={idx === categories.length - 1}
                       className={`text-xs px-1 rounded ${idx === categories.length - 1 ? 'text-slate-300' : 'text-slate-500 hover:bg-slate-200'}`}>▼</button>
                   </div>
-
-                  {/* 카테고리명 */}
                   {isEditing ? (
                     <div className="flex-1 flex gap-2">
                       <input type="text" value={editCategoryName}
@@ -284,9 +426,9 @@ function Products() {
                       <span className="flex-1 text-sm font-medium text-slate-700">{c.name}</span>
                       <span className="text-xs text-slate-400 mr-2">제품 {count}개</span>
                       <button onClick={() => { setEditCategoryId(c.id); setEditCategoryName(c.name) }}
-                        className="p-1.5 hover:bg-slate-200 rounded-lg text-sm opacity-0 group-hover:opacity-100 transition-opacity">✏️</button>
+                        className="p-1.5 hover:bg-slate-200 rounded-lg text-sm">✏️</button>
                       <button onClick={() => handleDeleteCategory(c.id, c.name)}
-                        className="p-1.5 hover:bg-red-100 rounded-lg text-sm opacity-0 group-hover:opacity-100 transition-opacity">🗑️</button>
+                        className="p-1.5 hover:bg-red-100 rounded-lg text-sm">🗑️</button>
                     </>
                   )}
                 </div>
@@ -296,8 +438,6 @@ function Products() {
               <p className="text-center text-slate-400 py-4 text-sm">등록된 카테고리가 없습니다.</p>
             )}
           </div>
-
-          {/* 새 카테고리 추가 */}
           <div className="flex gap-2 pt-3 border-t border-slate-200">
             <input type="text" value={newCategory} onChange={e => setNewCategory(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddCategory() } }}
