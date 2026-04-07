@@ -529,14 +529,64 @@ function PurchaseInput() {
               : saveSuccess ? 'bg-emerald-500' : 'bg-indigo-600 hover:bg-indigo-700'
             }`}>{saving ? '저장 중...' : saveSuccess ? '✓ 저장 완료!' : '매입 등록'}</button>
         </div>
-      ) : (
+       ) : (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-6">
-          <div onClick={() => fileInputRef.current?.click()}
-            className="border-2 border-dashed border-slate-300 rounded-xl p-12 text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors">
-            <span className="text-4xl mb-4 block">📄</span>
-            <p className="text-sm font-medium text-slate-600">클릭하여 엑셀 파일 선택</p>
-            <p className="text-xs text-slate-400 mt-1">컬럼: 제품코드, 제품명, 수량, 매입단가, 배송비, 부대비용, 메모</p>
-            {excelFileName && <p className="text-sm text-indigo-600 mt-3 font-medium">{excelFileName} ({excelData.length}행)</p>}
+          {/* 엑셀 가이드 */}
+          <div className="bg-blue-50 rounded-xl p-4 space-y-3">
+            <p className="text-sm font-semibold text-blue-800">📤 엑셀 매입 등록 안내</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead><tr className="bg-blue-100">
+                  <th className="px-3 py-2 text-left font-semibold text-blue-800 border border-blue-200">컬럼명</th>
+                  <th className="px-3 py-2 text-center font-semibold text-blue-800 border border-blue-200">필수</th>
+                  <th className="px-3 py-2 text-left font-semibold text-blue-800 border border-blue-200">설명</th>
+                  <th className="px-3 py-2 text-left font-semibold text-blue-800 border border-blue-200">예시</th>
+                </tr></thead>
+                <tbody>
+                  {[
+                    ['매입일자','선택','YYYY-MM-DD (미입력시 오늘)','2026-04-07'],
+                    ['제품코드','필수','등록된 제품코드 (미등록시 자동 등록)','DOL-001'],
+                    ['제품명','필수','제품 이름','직화 간장 불고기 180g'],
+                    ['수량','필수','숫자','10'],
+                    ['매입단가','필수','개당 매입 단가 (원)','2800'],
+                    ['배송비','선택','배송비 (원, 미입력시 0)','5000'],
+                    ['부대비용','선택','기타 비용 (원, 미입력시 0)','0'],
+                    ['카테고리','선택','미등록 제품 자동등록 시 카테고리','밀키트'],
+                    ['메모','선택','비고',''],
+                  ].map(([col,req,desc,ex],i) => (
+                    <tr key={i} className={i%2===0?'bg-white':'bg-blue-50/50'}>
+                      <td className="px-3 py-2 font-semibold text-slate-700 border border-blue-200">{col}</td>
+                      <td className={`px-3 py-2 text-center font-bold border border-blue-200 ${req==='필수'?'text-red-500':'text-slate-400'}`}>{req}</td>
+                      <td className="px-3 py-2 text-slate-600 border border-blue-200">{desc}</td>
+                      <td className="px-3 py-2 text-slate-500 border border-blue-200">{ex}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="text-xs text-blue-700 space-y-1 pt-2">
+              <p>• <strong>매입처는 상단에서 먼저 선택</strong>한 후 업로드하세요</p>
+              <p>• 미등록 제품이 있으면 <strong>자동으로 제품 등록 후 매입 처리</strong>됩니다</p>
+              <p>• .xlsx, .xls, .csv 파일 지원</p>
+            </div>
+          </div>
+
+          {/* 샘플 다운로드 + 파일 선택 */}
+          <div className="flex gap-3">
+            <button onClick={() => {
+              const sample = [
+                { '매입일자':'2026-04-07','제품코드':'DOL-001','제품명':'직화 간장 불고기 180g','수량':10,'매입단가':2800,'배송비':5000,'부대비용':0,'카테고리':'밀키트','메모':'' },
+                { '매입일자':'2026-04-07','제품코드':'DOL-002','제품명':'직화 고추장 불고기 180g','수량':10,'매입단가':2800,'배송비':0,'부대비용':0,'카테고리':'밀키트','메모':'' },
+              ]
+              const ws = XLSX.utils.json_to_sheet(sample); ws['!cols'] = Array(9).fill({wch:14})
+              const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'매입등록양식')
+              XLSX.writeFile(wb,'매입등록_샘플양식.xlsx')
+            }} className="px-5 py-3 bg-slate-100 text-slate-700 rounded-xl text-sm font-medium hover:bg-slate-200 border border-slate-300">📋 샘플 양식 다운로드</button>
+            <div onClick={() => fileInputRef.current?.click()}
+              className="flex-1 border-2 border-dashed border-slate-300 rounded-xl p-4 text-center cursor-pointer hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors">
+              <p className="text-sm font-medium text-slate-600">📄 클릭하여 엑셀 파일 선택</p>
+              {excelFileName && <p className="text-sm text-indigo-600 mt-1 font-medium">{excelFileName} ({excelData.length}행)</p>}
+            </div>
           </div>
           <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleExcelUpload} className="hidden" />
 
@@ -549,15 +599,13 @@ function PurchaseInput() {
                 </table>
               </div>
               <button onClick={handleExcelSave} disabled={excelSaving || !selectedSupplier}
-                className={`w-full py-4 rounded-2xl text-white font-semibold text-lg ${
-                  excelSaving || !selectedSupplier ? 'bg-slate-300 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'
-                }`}>{excelSaving ? '저장 중...' : `${excelData.length}건 매입 일괄 등록`}</button>
+                className={`w-full py-4 rounded-2xl text-white font-semibold text-lg ${excelSaving || !selectedSupplier ? 'bg-slate-300 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+                {excelSaving ? '저장 중...' : `${excelData.length}건 매입 일괄 등록`}
+              </button>
             </>
           )}
         </div>
       )}
-    </div>
-  )
-}
+
 
 export default PurchaseInput
