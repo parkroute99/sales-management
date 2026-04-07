@@ -5,7 +5,6 @@ import * as XLSX from 'xlsx'
 const CHANNEL_COLORS = ['#6366f1','#8b5cf6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#64748b']
 const emptyContact = () => ({ name: '', phone: '', email: '', role: '' })
 
-/* ── 엑셀 파싱: 거래처마스터 양식 (Suppliers.jsx와 동일 로직) ── */
 function parseTradePartnerExcel(sheetData) {
   let headerIdx = -1
   let headers = []
@@ -78,7 +77,7 @@ function Channels() {
   const [loading, setLoading] = useState(true)
   const [expandedId, setExpandedId] = useState(null)
   const [form, setForm] = useState({
-    channel_name: '', channel_type: 'open_market', default_commission_type: 'RATE',
+    channel_name: '', business_number: '', channel_type: 'open_market', default_commission_type: 'RATE',
     default_commission_rate: '', default_commission_fixed: '', default_shipping_policy: 'PAID',
     default_shipping_cost: '', color_code: '#6366f1', has_excel_format: true,
     contacts: [emptyContact()],
@@ -94,7 +93,7 @@ function Channels() {
 
   const resetForm = () => {
     setForm({
-      channel_name: '', channel_type: 'open_market', default_commission_type: 'RATE',
+      channel_name: '', business_number: '', channel_type: 'open_market', default_commission_type: 'RATE',
       default_commission_rate: '', default_commission_fixed: '', default_shipping_policy: 'PAID',
       default_shipping_cost: '', color_code: CHANNEL_COLORS[channels.length % CHANNEL_COLORS.length],
       has_excel_format: true, contacts: [emptyContact()],
@@ -112,7 +111,8 @@ function Channels() {
     const user = (await supabase.auth.getUser()).data.user
     const validContacts = form.contacts.filter(c => c.name || c.phone || c.email)
     const data = {
-      channel_name: form.channel_name, channel_type: form.channel_type,
+      channel_name: form.channel_name, business_number: form.business_number || null,
+      channel_type: form.channel_type,
       default_commission_type: form.default_commission_type,
       default_commission_rate: Number(form.default_commission_rate) || 0,
       default_commission_fixed: Number(form.default_commission_fixed) || 0,
@@ -135,7 +135,8 @@ function Channels() {
       contacts = ch.contacts.map(c => ({ name: c.name || '', phone: c.phone || '', email: c.email || '', role: c.role || '' }))
     } else { contacts = [emptyContact()] }
     setForm({
-      channel_name: ch.channel_name, channel_type: ch.channel_type,
+      channel_name: ch.channel_name, business_number: ch.business_number || '',
+      channel_type: ch.channel_type,
       default_commission_type: ch.default_commission_type,
       default_commission_rate: ch.default_commission_rate || '',
       default_commission_fixed: ch.default_commission_fixed || '',
@@ -167,7 +168,8 @@ function Channels() {
       const mc = contacts[0] || {}
       rows.push({
         '거래처코드': ch.channel_name.startsWith('C') ? ch.channel_name : '',
-        '거래처명': ch.channel_name, '구분': '매출처', '사업자번호': '',
+        '거래처명': ch.channel_name, '구분': '매출처',
+        '사업자번호': ch.business_number || '',
         '담당자명': mc.name || '', '연락처': mc.phone || '', '이메일': mc.email || '',
         '결제조건': ch.payment_terms || '', '결제방법': ch.payment_method || '',
         '결제계좌': ch.payment_account || '',
@@ -184,7 +186,6 @@ function Channels() {
     XLSX.writeFile(wb, `매출처목록_${new Date().toISOString().split('T')[0]}.xlsx`)
   }
 
-  /* ── 🔥 엑셀 업로드 (거래처마스터 양식 호환) ── */
   const handleExcelUpload = async (e) => {
     const file = e.target.files[0]; if (!file) return
     const reader = new FileReader()
@@ -212,7 +213,6 @@ function Channels() {
         }
       }
 
-      // 매출처만 필터 (구분이 '매출처'이거나 C코드)
       const channelsToAdd = partners.filter(p => {
         const t = p.type.toLowerCase()
         return t === '매출처' || p.code.startsWith('C')
@@ -232,7 +232,8 @@ function Channels() {
         if (existingNames.has(p.name)) { skipped++; continue }
 
         const { error } = await supabase.from('channels').insert({
-          channel_name: p.name, channel_type: 'open_market',
+          channel_name: p.name, business_number: p.bizNum || null,
+          channel_type: 'open_market',
           default_commission_type: 'RATE', default_commission_rate: 0, default_commission_fixed: 0,
           default_shipping_policy: 'PAID', default_shipping_cost: 0,
           has_excel_format: true,
@@ -297,6 +298,7 @@ function Channels() {
                 </div>
               </div>
               <div className="space-y-2 text-sm">
+                {ch.business_number && <div className="flex justify-between"><span className="text-slate-500">사업자번호</span><span className="text-slate-700 font-medium">{ch.business_number}</span></div>}
                 <div className="flex justify-between"><span className="text-slate-500">수수료</span>
                   <span className="text-slate-700 font-medium">{ch.default_commission_type === 'RATE' ? `${ch.default_commission_rate}%` : `${Number(ch.default_commission_fixed).toLocaleString()}원`}</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">배송정책</span>
@@ -344,6 +346,13 @@ function Channels() {
               <div><label className="block text-sm font-medium text-slate-700 mb-1">채널명 *</label>
                 <input type="text" value={form.channel_name} onChange={e => setForm({...form, channel_name: e.target.value})}
                   className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="예: 쿠팡, 파미웰" required /></div>
+
+              <div><label className="block text-sm font-medium text-slate-700 mb-1">사업자등록번호</label>
+                <input type="text" value={form.business_number} onChange={e => {
+                  const v = e.target.value.replace(/[^0-9-]/g, '')
+                  setForm({...form, business_number: v})
+                }}
+                  className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 outline-none" placeholder="000-00-00000" /></div>
 
               <div><label className="block text-sm font-medium text-slate-700 mb-1">유형</label>
                 <div className="flex gap-3">
