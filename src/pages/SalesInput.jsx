@@ -49,7 +49,7 @@ export default function SalesInput() {
   /* ── 배송비: 주문 단위로 관리 ── */
   const [shippingReceived, setShippingReceived] = useState(0)       // 고객에게 받은 배송비 (총액)
   const [shippingReceivedMode, setShippingReceivedMode] = useState('once') // 'once'=1회, 'per'=개당
-  const [shippingCost, setShippingCost] = useState(3000)            // 실제 택배비 (총액)
+  const [shippingCost, setShippingCost] = useState(0)            // 실제 택배비 (총액)
   const [shippingCostMode, setShippingCostMode] = useState('once')  // 'once'=1회, 'per'=개당
 
   /* ── 데이터 로드 ── */
@@ -69,15 +69,15 @@ export default function SalesInput() {
   }, [])
 
   /* ── 채널 선택 ── */
-  const handleChannelSelect = (ch) => {
+const handleChannelSelect = (ch) => {
     setSelectedChannel(ch)
-    setShippingReceived(ch.default_shipping_cost ?? 0)
+    setShippingReceived(0)
     setItems((prev) =>
       prev.map((it) => ({
         ...it,
-        commissionType: ch.default_commission_type === 'fixed' ? 'fixed' : 'rate',
-        commissionRate: ch.default_commission_rate ?? 15,
-        commissionFixed: ch.default_commission_fixed ?? 0,
+        commissionType: 'rate',
+        commissionRate: 0,
+        commissionFixed: 0,
       }))
     )
   }
@@ -186,9 +186,9 @@ export default function SalesInput() {
   const addItem = () => {
     const base = emptyItem()
     if (selectedChannel) {
-      base.commissionType = selectedChannel.default_commission_type === 'fixed' ? 'fixed' : 'rate'
-      base.commissionRate = selectedChannel.default_commission_rate ?? 15
-      base.commissionFixed = selectedChannel.default_commission_fixed ?? 0
+      base.commissionType = 'rate'
+      base.commissionRate = 0
+      base.commissionFixed = 0
     }
     setItems((prev) => [...prev, base])
     setActiveIdx(items.length)
